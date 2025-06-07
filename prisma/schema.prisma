@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Donation {
+  id             Int            @id @default(autoincrement())
+  shiftId        Int
+  organizationId Int
+  donorId        Int
+  shiftSignupId  Int?
+  createdAt      DateTime       @default(now())
+  summary        Float
+  Donor          Donor          @relation(fields: [donorId], references: [id])
+  Organization   Organization   @relation(fields: [organizationId], references: [id])
+  Shift          Shift          @relation(fields: [shiftId], references: [id])
+  ShiftSignup    ShiftSignup?   @relation(fields: [shiftSignupId], references: [id])
+  DonationItem   DonationItem[]
+}
+
+model DonationCategory {
+  id             Int            @id @default(autoincrement())
+  name           String
+  organizationId Int
+  icon           String?
+  Organization   Organization   @relation(fields: [organizationId], references: [id])
+  DonationItem   DonationItem[]
+}
+
+model DonationItem {
+  id               Int              @id @default(autoincrement())
+  donationId       Int
+  categoryId       Int
+  weightKg         Float
+  DonationCategory DonationCategory @relation(fields: [categoryId], references: [id])
+  Donation         Donation         @relation(fields: [donationId], references: [id])
+}
+
+model Donor {
+  id           Int          @id @default(autoincrement())
+  name         String       @unique
+  location     String?
+  contactInfo  String?
+  kitchenId    Int
+  Donation     Donation[]
+  Organization Organization @relation(fields: [kitchenId], references: [id])
+}
+
+model Organization {
+  id               Int                @id @default(autoincrement())
+  name             String             @unique
+  address          String?
+  Donation         Donation[]
+  DonationCategory DonationCategory[]
+  Donor            Donor[]
+  RecurringShift   RecurringShift[]
+  Shift            Shift[]
+  ShiftCategory    ShiftCategory[]
+  User             User[]
+}
+
+model RecurringShift {
+  id              Int           @id @default(autoincrement())
+  name            String
+  dayOfWeek       Int
+  startTime       DateTime
+  endTime         DateTime
+  shiftCategoryId Int
+  location        String
+  slots           Int
+  organizationId  Int
+  Organization    Organization  @relation(fields: [organizationId], references: [id])
+  ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
+}
+
+model Shift {
+  id              Int           @id @default(autoincrement())
+  name            String
+  shiftCategoryId Int
+  startTime       DateTime
+  endTime         DateTime
+  location        String
+  slots           Int
+  organizationId  Int
+  Donation        Donation[]
+  Organization    Organization  @relation(fields: [organizationId], references: [id])
+  ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
+  ShiftSignup     ShiftSignup[]
+}
+
+model ShiftCategory {
+  id             Int              @id @default(autoincrement())
+  name           String
+  icon           String?
+  organizationId Int
+  RecurringShift RecurringShift[]
+  Shift          Shift[]
+  Organization   Organization     @relation(fields: [organizationId], references: [id])
+
+  @@unique([name, organizationId])
+}
+
+model ShiftSignup {
+  id          Int        @id @default(autoincrement())
+  userId      Int
+  shiftId     Int
+  checkIn     DateTime?
+  checkOut    DateTime?
+  mealsServed Int?
+  createdAt   DateTime   @default(now())
+  Donation    Donation[]
+  Shift       Shift      @relation(fields: [shiftId], references: [id])
+  User        User       @relation(fields: [userId], references: [id])
+}
+
+model User {
+  id               Int           @id @default(autoincrement())
+  email            String        @unique
+  phone            String?       @unique
+  password         String
+  firstName        String
+  lastName         String
+  createdAt        DateTime      @default(now())
+  organizationId   Int
+  role             UserRole      @default(VOLUNTEER)
+  resetToken       String?
+  resetTokenExpiry DateTime?
+  updatedAt        DateTime
+  ShiftSignup      ShiftSignup[]
+  Organization     Organization  @relation(fields: [organizationId], references: [id])
+}
+
+enum UserRole {
+  VOLUNTEER
+  STAFF
+  ADMIN
+}

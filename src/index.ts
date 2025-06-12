@@ -1455,19 +1455,33 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    const { name, email, phone } = req.body;
-    
-    // Split the name into firstName and lastName
-    const [firstName, ...lastNameParts] = name.split(' ');
-    const lastName = lastNameParts.join(' ');
+    let { firstName, lastName, name, email, phone, role } = req.body;
+
+    // If firstName/lastName not provided, try to split from name
+    if ((!firstName || !lastName) && name) {
+      const [f, ...lArr] = name.split(' ');
+      firstName = f;
+      lastName = lArr.join(' ');
+    }
+
+    // Accept lastName as empty string or null
+    if (lastName === undefined || lastName === null) {
+      lastName = '';
+    }
+
+    // Validate required fields
+    if (!firstName || !email) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
 
     const user = await prisma.user.update({
       where: { id: Number(req.params.id), organizationId },
-      data: { 
+      data: {
         firstName,
         lastName,
         email,
         phone,
+        role,
         updatedAt: new Date()
       }
     });

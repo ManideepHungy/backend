@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import ExcelJS from 'exceljs'
+import nodemailer from 'nodemailer'
 
 dotenv.config()
 
@@ -42,7 +43,6 @@ app.post('/login', async (req, res) => {
   try {
     // Find user by email
     const user = await prisma.user.findUnique({ where: { email } });
-    // console.log(user);
     if (!user || user.role !== 'ADMIN') {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
@@ -51,8 +51,14 @@ app.post('/login', async (req, res) => {
     // if (!valid) {
     //   return res.status(401).json({ error: 'Invalid password' });
     // }
-    // Create JWT
-    const token = jwt.sign({ userId: user.id, email: user.email, role: user.role, organizationId: user.organizationId }, JWT_SECRET, { expiresIn: '7d' });
+    // Create JWT with user ID
+    const token = jwt.sign({ 
+      id: user.id,
+      userId: user.id, 
+      email: user.email, 
+      role: user.role, 
+      organizationId: user.organizationId 
+    }, JWT_SECRET, { expiresIn: '7d' });
     return res.json({ token });
   } catch (err) {
     console.error('Login error:', err);
@@ -295,13 +301,12 @@ app.get('/api/shift-categories', authenticateToken, async (req: any, res) => {
     const organizationId = req.user.organizationId;
     const categories = await prisma.shiftCategory.findMany({
       where: { organizationId },
-      orderBy: { id: 'asc' },
-      select: { name: true }
+      orderBy: { name: 'asc' }
     });
-    res.json(categories.map((c: any) => c.name));
+    res.json(categories);
   } catch (err) {
     console.error('Error fetching shift categories:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Failed to fetch shift categories' });
   }
 });
 
@@ -1243,14 +1248,14 @@ app.get('/api/dashboard-summary', authenticateToken, async (req: any, res) => {
         }
       },
       include: {
-        ShiftSignups: true
+        ShiftSignup: true
       }
     });
 
     // Get volunteer stats
     const volunteerHours = await prisma.shiftSignup.findMany({
       where: {
-        shift: {
+        Shift: {
           organizationId,
           startTime: {
             gte: startDate,
@@ -1281,7 +1286,7 @@ app.get('/api/dashboard-summary', authenticateToken, async (req: any, res) => {
 
     const outgoingStats = {
       totalMeals: shifts.reduce((sum: number, shift: any) => 
-        sum + shift.ShiftSignups.reduce((s: number, signup: any) => s + (signup.mealsServed || 0), 0), 0),
+        sum + shift.ShiftSignup.reduce((s: number, signup: any) => s + (signup.mealsServed || 0), 0), 0),
       totalShifts: shifts.length
     };
 
@@ -1381,6 +1386,1147 @@ app.get('/api/organization/:id', authenticateToken, async (req, res) => {
     res.json({ name: org.name });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- User Management Endpoints ---
+
+// Get all users
+app.get('/api/users', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const users = await prisma.user.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        password: true,
+        organizationId: true,
+        phone: true
+      }
+    });
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Get user by id
+app.get('/api/users/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const user = await prisma.user.findFirst({
+      where: { id: Number(req.params.id), organizationId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        phone: true,
+        Organization: {
+          select: {
+            name: true
+          }
+        }
+      }
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({
+      id: user.id,
+      name: user.firstName + ' ' + user.lastName,
+      email: user.email,
+      role: user.role,
+      phone: user.phone,
+      organizationName: user.Organization?.name || 'Unknown Organization'
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch user' });
+  }
+});
+
+// Edit user
+app.put('/api/users/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const { name, email, phone } = req.body;
+    
+    // Split the name into firstName and lastName
+    const [firstName, ...lastNameParts] = name.split(' ');
+    const lastName = lastNameParts.join(' ');
+
+    const user = await prisma.user.update({
+      where: { id: Number(req.params.id), organizationId },
+      data: { 
+        firstName,
+        lastName,
+        email,
+        phone,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({
+      id: user.id,
+      name: user.firstName + ' ' + user.lastName,
+      email: user.email,
+      phone: user.phone,
+      role: user.role
+    });
+  } catch (err) {
+    console.error('Error updating user:', err);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+// Delete user
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const user = await prisma.user.findUnique({ where: { id: Number(req.params.id) } });
+    if (!user || user.organizationId !== organizationId) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Manually delete related records
+    await prisma.shiftSignup.deleteMany({ where: { userId: user.id } });
+    // Add similar lines for other related tables if needed, e.g.:
+    // await prisma.donation.deleteMany({ where: { userId: user.id } });
+
+    // Now delete the user
+    await prisma.user.delete({ where: { id: Number(req.params.id) } });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// Add user
+app.post('/api/users', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const { firstName, lastName, email, phone, password, role } = req.body;
+
+    // Log the incoming request data
+    console.log('Adding user with data:', {
+      firstName,
+      lastName,
+      email,
+      phone,
+      role,
+      organizationId
+    });
+
+    // Validate required fields
+    if (!firstName || !lastName || !email || !phone || !password || !role) {
+      console.log('Missing required fields:', {
+        firstName: !firstName,
+        lastName: !lastName,
+        email: !email,
+        phone: !phone,
+        password: !password,
+        role: !role
+      });
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: {
+          firstName: !firstName,
+          lastName: !lastName,
+          email: !email,
+          phone: !phone,
+          password: !password,
+          role: !role
+        }
+      });
+    }
+
+    // Check if user with email already exists
+    const existingUser = await prisma.user.findUnique({
+      where: { email }
+    });
+
+    if (existingUser) {
+      console.log('User with email already exists:', email);
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    // Check if user with phone already exists
+    const existingPhone = await prisma.user.findUnique({
+      where: { phone }
+    });
+
+    if (existingPhone) {
+      console.log('User with phone already exists:', phone);
+      return res.status(400).json({ error: 'User with this phone number already exists' });
+    }
+
+    // Create user
+    const user = await prisma.user.create({
+      data: {
+        firstName,
+        lastName,
+        email,
+        phone,
+        password,
+        role,
+        organizationId,
+        updatedAt: new Date()
+      }
+    });
+
+    console.log('User created successfully:', user.id);
+
+    // Fetch organization name
+    const org = await prisma.organization.findUnique({ where: { id: organizationId } });
+
+    // Send welcome email
+    try {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Welcome to Hungy!',
+        text: `You have been added to Hungy under organization: ${org?.name || 'Unknown'}.
+\nYour login details:\nUser ID: ${email}\nPassword: ${password}\nRole: ${role}\n\nPlease log in and change your password after first login.`,
+      };
+      await transporter.sendMail(mailOptions);
+      console.log('Welcome email sent successfully to:', email);
+    } catch (emailErr) {
+      console.error('Failed to send welcome email:', emailErr);
+      // Don't return error here as user was created successfully
+    }
+
+    res.json({
+      id: user.id,
+      name: user.firstName + ' ' + user.lastName,
+      email: user.email,
+      role: user.role
+    });
+  } catch (err) {
+    console.error('Error adding user:', err);
+    res.status(500).json({ 
+      error: 'Failed to add user',
+      details: err instanceof Error ? err.message : 'Unknown error'
+    });
+  }
+});
+
+// Get all organizations (for dropdown)
+app.get('/api/organizations', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const organizations = await prisma.organization.findMany({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        name: true,
+        address: true
+      }
+    });
+    res.json(organizations);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch organizations' });
+  }
+});
+
+// --- ShiftCategory CRUD Operations ---
+
+// Create new shift category
+app.post('/api/shift-categories', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { name, icon } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    // Check if category with same name exists for this organization
+    const existing = await prisma.shiftCategory.findFirst({
+      where: {
+        name,
+        organizationId
+      }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    const category = await prisma.shiftCategory.create({
+      data: {
+        name,
+        icon,
+        organizationId
+      }
+    });
+
+    res.json(category);
+  } catch (err) {
+    console.error('Error creating shift category:', err);
+    res.status(500).json({ error: 'Failed to create shift category' });
+  }
+});
+
+// Update shift category
+app.put('/api/shift-categories/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { name, icon } = req.body;
+    const id = parseInt(req.params.id);
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    // Check if category exists and belongs to organization
+    const existing = await prisma.shiftCategory.findFirst({
+      where: {
+        id,
+        organizationId
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if new name conflicts with another category
+    const nameConflict = await prisma.shiftCategory.findFirst({
+      where: {
+        name,
+        organizationId,
+        id: { not: id }
+      }
+    });
+
+    if (nameConflict) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    const category = await prisma.shiftCategory.update({
+      where: { id },
+      data: { name, icon }
+    });
+
+    res.json(category);
+  } catch (err) {
+    console.error('Error updating shift category:', err);
+    res.status(500).json({ error: 'Failed to update shift category' });
+  }
+});
+
+// Delete shift category
+app.delete('/api/shift-categories/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const id = parseInt(req.params.id);
+
+    // Check if category exists and belongs to organization
+    const existing = await prisma.shiftCategory.findFirst({
+      where: {
+        id,
+        organizationId
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if category is in use
+    const shifts = await prisma.shift.findFirst({
+      where: { shiftCategoryId: id }
+    });
+
+    const recurringShifts = await prisma.recurringShift.findFirst({
+      where: { shiftCategoryId: id }
+    });
+
+    if (shifts || recurringShifts) {
+      return res.status(400).json({ 
+        error: 'Cannot delete category that is in use by shifts or recurring shifts' 
+      });
+    }
+
+    await prisma.shiftCategory.delete({
+      where: { id }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting shift category:', err);
+    res.status(500).json({ error: 'Failed to delete shift category' });
+  }
+});
+
+// --- RecurringShift CRUD Operations ---
+
+// Get all recurring shifts for the organization
+app.get('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const shifts = await prisma.recurringShift.findMany({
+      where: { organizationId },
+      include: {
+        ShiftCategory: true
+      },
+      orderBy: [
+        { dayOfWeek: 'asc' },
+        { startTime: 'asc' }
+      ]
+    });
+    res.json(shifts);
+  } catch (err) {
+    console.error('Error fetching recurring shifts:', err);
+    res.status(500).json({ error: 'Failed to fetch recurring shifts' });
+  }
+});
+
+// Create new recurring shift
+app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots } = req.body;
+
+    // Validate required fields
+    if (!name || dayOfWeek === undefined || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: {
+          name: !name,
+          dayOfWeek: dayOfWeek === undefined,
+          startTime: !startTime,
+          endTime: !endTime,
+          shiftCategoryId: !shiftCategoryId,
+          location: !location,
+          slots: !slots
+        }
+      });
+    }
+
+    // Validate day of week
+    if (dayOfWeek < 0 || dayOfWeek > 6) {
+      return res.status(400).json({ error: 'Day of week must be between 0 and 6' });
+    }
+
+    // Validate slots
+    if (slots < 1) {
+      return res.status(400).json({ error: 'Slots must be at least 1' });
+    }
+
+    // Check if category exists and belongs to organization
+    const category = await prisma.shiftCategory.findFirst({
+      where: {
+        id: shiftCategoryId,
+        organizationId
+      }
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: 'Shift category not found' });
+    }
+
+    // Create recurring shift
+    const shift = await prisma.recurringShift.create({
+      data: {
+        name,
+        dayOfWeek,
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        shiftCategoryId,
+        location,
+        slots,
+        organizationId
+      },
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(shift);
+  } catch (err) {
+    console.error('Error creating recurring shift:', err);
+    res.status(500).json({ error: 'Failed to create recurring shift' });
+  }
+});
+
+// Update recurring shift
+app.put('/api/recurring-shifts/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const id = parseInt(req.params.id);
+    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots } = req.body;
+
+    // Validate required fields
+    if (!name || dayOfWeek === undefined || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
+      return res.status(400).json({ 
+        error: 'Missing required fields',
+        details: {
+          name: !name,
+          dayOfWeek: dayOfWeek === undefined,
+          startTime: !startTime,
+          endTime: !endTime,
+          shiftCategoryId: !shiftCategoryId,
+          location: !location,
+          slots: !slots
+        }
+      });
+    }
+
+    // Validate day of week
+    if (dayOfWeek < 0 || dayOfWeek > 6) {
+      return res.status(400).json({ error: 'Day of week must be between 0 and 6' });
+    }
+
+    // Validate slots
+    if (slots < 1) {
+      return res.status(400).json({ error: 'Slots must be at least 1' });
+    }
+
+    // Check if shift exists and belongs to organization
+    const existing = await prisma.recurringShift.findFirst({
+      where: {
+        id,
+        organizationId
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    // Check if category exists and belongs to organization
+    const category = await prisma.shiftCategory.findFirst({
+      where: {
+        id: shiftCategoryId,
+        organizationId
+      }
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: 'Shift category not found' });
+    }
+
+    // Update recurring shift
+    const shift = await prisma.recurringShift.update({
+      where: { id },
+      data: {
+        name,
+        dayOfWeek,
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        shiftCategoryId,
+        location,
+        slots
+      },
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(shift);
+  } catch (err) {
+    console.error('Error updating recurring shift:', err);
+    res.status(500).json({ error: 'Failed to update recurring shift' });
+  }
+});
+
+// Delete recurring shift
+app.delete('/api/recurring-shifts/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const id = parseInt(req.params.id);
+
+    // Check if shift exists and belongs to organization
+    const existing = await prisma.recurringShift.findFirst({
+      where: {
+        id,
+        organizationId
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    await prisma.recurringShift.delete({
+      where: { id }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting recurring shift:', err);
+    res.status(500).json({ error: 'Failed to delete recurring shift' });
+  }
+});
+
+// --- Shift CRUD Operations ---
+
+// Get all shifts for the organization
+app.get('/api/shifts', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const shifts = await prisma.shift.findMany({
+      where: { organizationId },
+      include: { 
+        ShiftCategory: true,
+        ShiftSignup: {
+          include: {
+            User: true
+          }
+        }
+      },
+      orderBy: { startTime: 'asc' }
+    });
+    res.json(shifts);
+  } catch (err) {
+    console.error('Error fetching shifts:', err);
+    res.status(500).json({ error: 'Failed to fetch shifts' });
+  }
+});
+
+// Get shift by id
+app.get('/api/shifts/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const id = parseInt(req.params.id);
+    const shift = await prisma.shift.findFirst({
+      where: { id, organizationId },
+      include: { ShiftCategory: true }
+    });
+    if (!shift) return res.status(404).json({ error: 'Shift not found' });
+    res.json(shift);
+  } catch (err) {
+    console.error('Error fetching shift:', err);
+    res.status(500).json({ error: 'Failed to fetch shift' });
+  }
+});
+
+// Create new shift
+app.post('/api/shifts', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const { name, shiftCategoryId, startTime, endTime, location, slots } = req.body;
+    if (!name || !shiftCategoryId || !startTime || !endTime || !location || !slots) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (slots < 1) {
+      return res.status(400).json({ error: 'Slots must be at least 1' });
+    }
+    // Check if category exists and belongs to organization
+    const category = await prisma.shiftCategory.findFirst({
+      where: { id: shiftCategoryId, organizationId }
+    });
+    if (!category) {
+      return res.status(404).json({ error: 'Shift category not found' });
+    }
+    const shift = await prisma.shift.create({
+      data: {
+        name,
+        shiftCategoryId,
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        location,
+        slots,
+        organizationId
+      },
+      include: { ShiftCategory: true }
+    });
+    res.json(shift);
+  } catch (err) {
+    console.error('Error creating shift:', err);
+    res.status(500).json({ error: 'Failed to create shift' });
+  }
+});
+
+// Update shift
+app.put('/api/shifts/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const id = parseInt(req.params.id);
+    const { name, shiftCategoryId, startTime, endTime, location, slots } = req.body;
+    if (!name || !shiftCategoryId || !startTime || !endTime || !location || !slots) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (slots < 1) {
+      return res.status(400).json({ error: 'Slots must be at least 1' });
+    }
+    // Check if shift exists and belongs to organization
+    const existing = await prisma.shift.findFirst({
+      where: { id, organizationId }
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+    // Check if category exists and belongs to organization
+    const category = await prisma.shiftCategory.findFirst({
+      where: { id: shiftCategoryId, organizationId }
+    });
+    if (!category) {
+      return res.status(404).json({ error: 'Shift category not found' });
+    }
+    const shift = await prisma.shift.update({
+      where: { id },
+      data: {
+        name,
+        shiftCategoryId,
+        startTime: new Date(startTime),
+        endTime: new Date(endTime),
+        location,
+        slots
+      },
+      include: { ShiftCategory: true }
+    });
+    res.json(shift);
+  } catch (err) {
+    console.error('Error updating shift:', err);
+    res.status(500).json({ error: 'Failed to update shift' });
+  }
+});
+
+// Delete shift
+app.delete('/api/shifts/:id', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const id = parseInt(req.params.id);
+    // Check if shift exists and belongs to organization
+    const existing = await prisma.shift.findFirst({
+      where: { id, organizationId }
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+    // Optionally: delete related shift signups
+    await prisma.shiftSignup.deleteMany({ where: { shiftId: id } });
+    await prisma.shift.delete({ where: { id } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting shift:', err);
+    res.status(500).json({ error: 'Failed to delete shift' });
+  }
+});
+
+// Schedule a shift for users based on recurring shift
+app.post('/api/schedule-shift', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { recurringShiftId, userIds } = req.body;
+    if (!recurringShiftId || !Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'recurringShiftId and userIds[] are required' });
+    }
+    // Get the recurring shift
+    const rec = await prisma.recurringShift.findFirst({
+      where: { id: Number(recurringShiftId), organizationId },
+      include: { ShiftCategory: true }
+    });
+    if (!rec) return res.status(404).json({ error: 'Recurring shift not found' });
+    // Calculate next occurrence date
+    const today = new Date();
+    const dayDiff = (rec.dayOfWeek - today.getDay() + 7) % 7 || 7;
+    const nextDate = new Date(today);
+    nextDate.setDate(today.getDate() + dayDiff);
+    // Set start/end times for next occurrence
+    const start = new Date(nextDate);
+    start.setHours(new Date(rec.startTime).getHours(), new Date(rec.startTime).getMinutes(), 0, 0);
+    const end = new Date(nextDate);
+    end.setHours(new Date(rec.endTime).getHours(), new Date(rec.endTime).getMinutes(), 0, 0);
+    // Check if a shift already exists for this recurring shift/date/time
+    let shift = await prisma.shift.findFirst({
+      where: {
+        organizationId,
+        shiftCategoryId: rec.shiftCategoryId,
+        name: rec.name,
+        startTime: start,
+        endTime: end,
+        location: rec.location
+      }
+    });
+    if (!shift) {
+      // Create the shift
+      shift = await prisma.shift.create({
+        data: {
+          name: rec.name,
+          shiftCategoryId: rec.shiftCategoryId,
+          startTime: start,
+          endTime: end,
+          location: rec.location,
+          slots: rec.slots,
+          organizationId
+        }
+      });
+    }
+    // For each user, create a ShiftSignup if not already present
+    let created = 0, skipped = 0;
+    for (const userId of userIds) {
+      const existing = await prisma.shiftSignup.findFirst({
+        where: { userId: Number(userId), shiftId: shift.id }
+      });
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await prisma.shiftSignup.create({
+        data: {
+          userId: Number(userId),
+          shiftId: shift.id
+        }
+      });
+      created++;
+    }
+    res.json({ success: true, created, skipped, shiftId: shift.id });
+  } catch (err) {
+    console.error('Error scheduling shift:', err);
+    res.status(500).json({ error: 'Failed to schedule shift' });
+  }
+});
+
+// Create shift signup
+app.post('/api/shiftsignups', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { userId, shiftId, checkIn, checkOut, mealsServed } = req.body;
+
+    // Validate required fields
+    if (!userId || !shiftId) {
+      return res.status(400).json({ error: 'userId and shiftId are required' });
+    }
+
+    // Check if shift exists and belongs to organization
+    const shift = await prisma.shift.findFirst({
+      where: { id: Number(shiftId), organizationId }
+    });
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: Number(userId), organizationId }
+    });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if signup already exists
+    const existing = await prisma.shiftSignup.findFirst({
+      where: { userId: Number(userId), shiftId: Number(shiftId) }
+    });
+    if (existing) {
+      return res.status(400).json({ error: 'User is already signed up for this shift' });
+    }
+
+    // Create the shift signup
+    const signup = await prisma.shiftSignup.create({
+      data: {
+        userId: Number(userId),
+        shiftId: Number(shiftId),
+        checkIn: checkIn ? new Date(checkIn) : null,
+        checkOut: checkOut ? new Date(checkOut) : null,
+        mealsServed: mealsServed || 0
+      },
+      include: {
+        User: true,
+        Shift: true
+      }
+    });
+
+    res.json(signup);
+  } catch (err) {
+    console.error('Error creating shift signup:', err);
+    res.status(500).json({ error: 'Failed to create shift signup' });
+  }
+});
+
+// --- Organization CRUD Operations ---
+
+// Get all organizations
+app.get('/api/organizations', authenticateToken, async (req, res) => {
+  try {
+    const organizations = await prisma.organization.findMany({
+      select: {
+        id: true,
+        name: true,
+        address: true
+      }
+    });
+    res.json(organizations);
+  } catch (err) {
+    console.error('Error fetching organizations:', err);
+    res.status(500).json({ error: 'Failed to fetch organizations' });
+  }
+});
+
+// Get organization by ID
+app.get('/api/organizations/:id', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    const organization = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        name: true,
+        address: true
+      }
+    });
+
+    if (!organization) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    res.json(organization);
+  } catch (err) {
+    console.error('Error fetching organization:', err);
+    res.status(500).json({ error: 'Failed to fetch organization' });
+  }
+});
+
+// Create new organization
+app.post('/api/organizations', authenticateToken, async (req: any, res) => {
+  try {
+    const { name, address } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    // Check if organization with same name exists
+    const existing = await prisma.organization.findUnique({
+      where: { name }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Organization with this name already exists' });
+    }
+
+    const organization = await prisma.organization.create({
+      data: {
+        name,
+        address
+      },
+      select: {
+        id: true,
+        name: true,
+        address: true
+      }
+    });
+
+    res.json(organization);
+  } catch (err) {
+    console.error('Error creating organization:', err);
+    res.status(500).json({ error: 'Failed to create organization' });
+  }
+});
+
+// Update organization
+app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    const { name, address } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
+    }
+
+    // Check if organization exists
+    const existing = await prisma.organization.findUnique({
+      where: { id: organizationId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Check if new name conflicts with another organization
+    if (name !== existing.name) {
+      const nameConflict = await prisma.organization.findUnique({
+        where: { name }
+      });
+
+      if (nameConflict) {
+        return res.status(400).json({ error: 'Organization with this name already exists' });
+      }
+    }
+
+    const organization = await prisma.organization.update({
+      where: { id: organizationId },
+      data: {
+        name,
+        address
+      },
+      select: {
+        id: true,
+        name: true,
+        address: true
+      }
+    });
+
+    res.json(organization);
+  } catch (err) {
+    console.error('Error updating organization:', err);
+    res.status(500).json({ error: 'Failed to update organization' });
+  }
+});
+
+// Delete organization
+app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    // Check if organization exists
+    const organization = await prisma.organization.findUnique({
+      where: { id: organizationId }
+    });
+
+    if (!organization) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Delete related records first
+    await prisma.$transaction([
+      prisma.donation.deleteMany({ where: { organizationId } }),
+      prisma.donationCategory.deleteMany({ where: { organizationId } }),
+      prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+      prisma.recurringShift.deleteMany({ where: { organizationId } }),
+      prisma.shift.deleteMany({ where: { organizationId } }),
+      prisma.shiftCategory.deleteMany({ where: { organizationId } }),
+      prisma.user.deleteMany({ where: { organizationId } })
+    ]);
+
+    // Delete the organization
+    await prisma.organization.delete({
+      where: { id: organizationId }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting organization:', err);
+    res.status(500).json({ error: 'Failed to delete organization' });
+  }
+});
+
+// Get organization statistics
+app.get('/api/organizations/:id/stats', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    // Get counts for different entities
+    const [totalUsers, totalShifts, totalDonations] = await Promise.all([
+      prisma.user.count({ where: { organizationId } }),
+      prisma.shift.count({ where: { organizationId } }),
+      prisma.donation.count({ where: { organizationId } })
+    ]);
+
+    res.json({
+      totalUsers,
+      totalShifts,
+      totalDonations
+    });
+  } catch (err) {
+    console.error('Error fetching organization stats:', err);
+    res.status(500).json({ error: 'Failed to fetch organization statistics' });
+  }
+});
+
+// Update shift signup
+app.put("/api/shiftsignups/:id", authenticateToken, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    try {
+      // Update the shift signup with the new userId
+      const updatedSignup = await prisma.shiftSignup.update({
+        where: { id: Number(id) },
+        data: {
+          userId: Number(userId)
+        }
+      });
+      res.json(updatedSignup);
+    } catch (updateError: any) {
+      console.error("Prisma update error:", updateError);
+      if (updateError.code === 'P2025') {
+        return res.status(404).json({ error: "Shift signup not found" });
+      }
+      throw updateError;
+    }
+  } catch (err) {
+    console.error("Error updating shift signup:", err);
+    res.status(500).json({ error: "Failed to update shift signup" });
+  }
+});
+
+// Delete shift signup
+app.delete('/api/shiftsignups/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const id = parseInt(req.params.id);
+
+    // Check if signup exists and belongs to organization
+    const existing = await prisma.shiftSignup.findFirst({
+      where: { 
+        id,
+        Shift: {
+          organizationId
+        }
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Shift signup not found' });
+    }
+
+    // Delete the shift signup
+    await prisma.shiftSignup.delete({
+      where: { id }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting shift signup:', err);
+    res.status(500).json({ error: 'Failed to delete shift signup' });
   }
 });
 

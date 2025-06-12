@@ -114,7 +114,7 @@ model ShiftSignup {
   createdAt   DateTime   @default(now())
   Donation    Donation[]
   Shift       Shift      @relation(fields: [shiftId], references: [id])
-  User        User       @relation(fields: [userId], references: [id])
+  User        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model User {

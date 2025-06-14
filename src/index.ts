@@ -930,7 +930,7 @@ app.get('/api/inventory-categories/filtered', authenticateToken, async (req: any
     if (!year) {
       return res.status(400).json({ error: 'Year is required' });
     }
-    if (!month || parseInt(month) === 0) {
+    if (!month || month === 'all' || parseInt(month) === 0) {
       // All months: get the whole year
       startDate = new Date(parseInt(year), 0, 1);
       endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
@@ -2331,6 +2331,24 @@ app.post('/api/organizations', authenticateToken, async (req: any, res) => {
       return res.status(400).json({ error: 'Name is required' });
     }
 
+    // Validate address format
+    if (address) {
+      try {
+        const addresses = JSON.parse(address);
+        if (!Array.isArray(addresses)) {
+          return res.status(400).json({ error: 'Address must be an array' });
+        }
+        if (addresses.length === 0) {
+          return res.status(400).json({ error: 'At least one address is required' });
+        }
+        if (addresses.some((addr: string) => !addr || typeof addr !== 'string' || !addr.trim())) {
+          return res.status(400).json({ error: 'Invalid address format' });
+        }
+      } catch (err) {
+        return res.status(400).json({ error: 'Invalid address JSON format' });
+      }
+    }
+
     // Check if organization with same name exists
     const existing = await prisma.organization.findUnique({
       where: { name }
@@ -2374,6 +2392,24 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Name is required' });
     }
 
+    // Validate address format
+    if (address) {
+      try {
+        const addresses = JSON.parse(address);
+        if (!Array.isArray(addresses)) {
+          return res.status(400).json({ error: 'Address must be an array' });
+        }
+        if (addresses.length === 0) {
+          return res.status(400).json({ error: 'At least one address is required' });
+        }
+        if (addresses.some((addr: string) => !addr || typeof addr !== 'string' || !addr.trim())) {
+          return res.status(400).json({ error: 'Invalid address format' });
+        }
+      } catch (err) {
+        return res.status(400).json({ error: 'Invalid address JSON format' });
+      }
+    }
+
     // Check if organization exists
     const existing = await prisma.organization.findUnique({
       where: { id: organizationId }
@@ -2394,11 +2430,11 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    const organization = await prisma.organization.update({
+    const updatedOrganization = await prisma.organization.update({
       where: { id: organizationId },
       data: {
         name,
-        address
+        address: address || existing.address
       },
       select: {
         id: true,
@@ -2407,7 +2443,7 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       }
     });
 
-    res.json(organization);
+    res.json(updatedOrganization);
   } catch (err) {
     console.error('Error updating organization:', err);
     res.status(500).json({ error: 'Failed to update organization' });
@@ -2544,7 +2580,193 @@ app.delete('/api/shiftsignups/:id', authenticateToken, async (req: any, res) => 
   }
 });
 
+// Get all donors for the authenticated organization
+app.get('/api/donors', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+    res.json(donors);
+  } catch (err) {
+    console.error('Error fetching donors:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export inventory table (donor x category) as Excel
+app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+    // Convert month and year to numbers
+    const monthNum = Number(month);
+    const yearNum = Number(year);
+    let startDate: Date, endDate: Date;
+    if (!yearNum) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!monthNum || monthNum === 0) {
+      startDate = new Date(yearNum, 0, 1);
+      endDate = new Date(yearNum, 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(yearNum, monthNum - 1, 1);
+      endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
+    }
+    // Fetch donors
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+    // Fetch categories
+    const categories = await prisma.donationCategory.findMany({
+      where: { organizationId },
+      select: { id: true, name: true }
+    });
+    // Fetch all donation items for this org and date range
+    const items = await prisma.donationItem.findMany({
+      where: {
+        Donation: {
+          organizationId,
+          createdAt: {
+            gte: startDate,
+            lte: endDate
+          }
+        }
+      },
+      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+    });
+    // Build donor x category table
+    const donorIdToName: Record<number, string> = {};
+    donors.forEach(d => { donorIdToName[d.id] = d.name; });
+    const catIdToName: Record<number, string> = {};
+    categories.forEach(c => { catIdToName[c.id] = c.name; });
+    // Initialize table: donorName -> categoryName -> 0
+    const table: Record<string, Record<string, number>> = {};
+    donors.forEach(donor => {
+      table[donor.name] = {};
+      categories.forEach(cat => {
+        table[donor.name][cat.name] = 0;
+      });
+    });
+    // Fill table with actual weights
+    items.forEach(item => {
+      const donorName = donorIdToName[Number(item.Donation.donorId)];
+      const catName = catIdToName[Number(item.categoryId)];
+      if (donorName && catName) {
+        table[donorName][catName] += item.weightKg;
+      }
+    });
+    // Prepare Excel data
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Inventory');
+    // Header row
+    const headerRow = ['Donor', ...categories.map(c => c.name), 'Total'];
+    worksheet.addRow(headerRow);
+    // Data rows
+    donors.forEach(donor => {
+      const row: (string | number)[] = [donor.name];
+      let donorTotal = 0;
+      categories.forEach(cat => {
+        let val: number = table[donor.name][cat.name] || 0;
+        if (unit === 'Pounds (lb)') val = +(val * 2.20462).toFixed(2);
+        else val = +val.toFixed(2);
+        row.push(val);
+        donorTotal += val;
+      });
+      row.push(+donorTotal.toFixed(2));
+      worksheet.addRow(row);
+    });
+    // Total row
+    const totalRow: (string | number)[] = ['Total'];
+    let grandTotal: number = 0;
+    categories.forEach(cat => {
+      let catTotal: number = donors.reduce((sum: number, donor) => sum + (unit === 'Pounds (lb)'
+        ? +(table[donor.name][cat.name] * 2.20462)
+        : table[donor.name][cat.name]), 0);
+      catTotal = +(catTotal.toFixed(2));
+      totalRow.push(catTotal);
+      grandTotal += catTotal;
+    });
+    totalRow.push(+grandTotal.toFixed(2));
+    worksheet.addRow(totalRow);
+    // Set response headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory-table-${year}-${month}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error exporting inventory table:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Start server
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`)
 }) 
+
+// Add GET endpoint to fetch shift signups by shiftId
+app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
+  try {
+    const { shiftId } = req.query;
+    if (!shiftId) {
+      return res.status(400).json({ error: 'shiftId is required' });
+    }
+    const signups = await prisma.shiftSignup.findMany({
+      where: { shiftId: Number(shiftId) },
+      include: { User: true }
+    });
+    res.json(signups);
+  } catch (err) {
+    console.error('Error fetching shift signups:', err);
+    res.status(500).json({ error: 'Failed to fetch shift signups' });
+  }
+}); 
+
+// --- New endpoint: Get scheduled and unscheduled users for a shift ---
+app.get('/api/shift-employees', authenticateToken, async (req, res) => {
+  try {
+    const reqAny = req as any;
+    const { shiftId } = req.query;
+    const organizationId = reqAny.user.organizationId;
+    if (!shiftId) return res.status(400).json({ error: 'shiftId is required' });
+    // Get the shift
+    const shift = await prisma.shift.findFirst({
+      where: { id: Number(shiftId), organizationId },
+      include: { ShiftSignup: true }
+    });
+    if (!shift) return res.status(404).json({ error: 'Shift not found' });
+    // Get all users in the org
+    const users = await prisma.user.findMany({
+      where: { organizationId },
+      select: { id: true, firstName: true, lastName: true }
+    });
+    // Get all signups for this shift
+    const signups = await prisma.shiftSignup.findMany({
+      where: { shiftId: Number(shiftId) },
+      include: { User: true }
+    });
+    // Scheduled users
+    const scheduled = signups.map(signup => ({
+      id: signup.User.id,
+      name: signup.User.firstName + ' ' + signup.User.lastName,
+      signupId: signup.id
+    }));
+    // Unscheduled users
+    const scheduledIds = new Set(scheduled.map(u => u.id));
+    const unscheduled = users
+      .filter(u => !scheduledIds.has(u.id))
+      .map(u => ({ id: u.id, name: u.firstName + ' ' + u.lastName }));
+    res.json({
+      scheduled,
+      unscheduled,
+      slots: shift.slots,
+      booked: scheduled.length
+    });
+  } catch (err) {
+    console.error('Error in /api/shift-employees:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}); 

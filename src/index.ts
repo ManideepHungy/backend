@@ -2,7 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import { PrismaClient } from '@prisma/client'
-import bcrypt from 'bcrypt'
+import * as bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import ExcelJS from 'exceljs'
 import nodemailer from 'nodemailer'
@@ -13,6 +13,17 @@ const app = express()
 const prisma = new PrismaClient()
 const port = process.env.PORT || 3001
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
+
+// Add TypeScript declaration for global OTP store
+declare global {
+  var otpStore: {
+    [email: string]: {
+      otp: string;
+      expiry: Date;
+      attempts: number;
+    };
+  } | undefined;
+}
 
 // Middleware
 app.use(cors())
@@ -43,14 +54,30 @@ app.post('/login', async (req, res) => {
   try {
     // Find user by email
     const user = await prisma.user.findUnique({ where: { email } });
-    if (!user || user.role !== 'ADMIN') {
+    if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
-    // Compare password
-    // const valid = await bcrypt.compare(password, user.password);
-    // if (!valid) {
-    //   return res.status(401).json({ error: 'Invalid password' });
-    // }
+
+    // Check if user is admin (for admin login)
+    if (user.role !== 'ADMIN') {
+      return res.status(401).json({ error: 'Access denied. Admin privileges required.' });
+    }
+
+    // Compare password - handle both hashed and plain text passwords for backward compatibility
+    let validPassword = false;
+    
+    // First, try to compare with bcrypt (for hashed passwords)
+    if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+      validPassword = await bcrypt.compare(password, user.password);
+    } else {
+      // For plain text passwords (backward compatibility)
+      validPassword = password === user.password;
+    }
+
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
     // Create JWT with user ID
     const token = jwt.sign({ 
       id: user.id,
@@ -59,6 +86,49 @@ app.post('/login', async (req, res) => {
       role: user.role, 
       organizationId: user.organizationId 
     }, JWT_SECRET, { expiresIn: '7d' });
+    
+    return res.json({ token });
+  } catch (err) {
+    console.error('Login error:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// User login endpoint (for non-admin users)
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // Find user by email
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Compare password - handle both hashed and plain text passwords for backward compatibility
+    let validPassword = false;
+    
+    // First, try to compare with bcrypt (for hashed passwords)
+    if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+      validPassword = await bcrypt.compare(password, user.password);
+    } else {
+      // For plain text passwords (backward compatibility)
+      validPassword = password === user.password;
+    }
+
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Create JWT with user ID
+    const token = jwt.sign({ 
+      id: user.id,
+      userId: user.id, 
+      email: user.email, 
+      role: user.role, 
+      organizationId: user.organizationId 
+    }, JWT_SECRET, { expiresIn: '7d' });
+    
     return res.json({ token });
   } catch (err) {
     console.error('Login error:', err);
@@ -1455,7 +1525,7 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    let { firstName, lastName, name, email, phone, role } = req.body;
+    let { firstName, lastName, name, email, phone, role, password } = req.body;
 
     // If firstName/lastName not provided, try to split from name
     if ((!firstName || !lastName) && name) {
@@ -1474,16 +1544,24 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Prepare update data
+    const updateData: any = {
+      firstName,
+      lastName,
+      email,
+      phone,
+      role,
+      updatedAt: new Date()
+    };
+
+    // If password is provided, hash it
+    if (password) {
+      updateData.password = await bcrypt.hash(password, 10);
+    }
+
     const user = await prisma.user.update({
       where: { id: Number(req.params.id), organizationId },
-      data: {
-        firstName,
-        lastName,
-        email,
-        phone,
-        role,
-        updatedAt: new Date()
-      }
+      data: updateData
     });
 
     res.json({
@@ -1496,6 +1574,61 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Error updating user:', err);
     res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+// Update user password endpoint
+app.put('/api/users/:id/password', authenticateToken, async (req, res) => {
+  const reqAny = req as any;
+  try {
+    const organizationId = reqAny.user.organizationId;
+    const { currentPassword, newPassword } = req.body;
+    const userId = Number(req.params.id);
+
+    // Validate required fields
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    // Get the user
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    let validCurrentPassword = false;
+    
+    // Handle both hashed and plain text passwords for backward compatibility
+    if (user.password.startsWith('$2b$') || user.password.startsWith('$2a$')) {
+      validCurrentPassword = await bcrypt.compare(currentPassword, user.password);
+    } else {
+      validCurrentPassword = currentPassword === user.password;
+    }
+
+    if (!validCurrentPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash the new password
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the password
+    await prisma.user.update({
+      where: { id: userId },
+      data: { 
+        password: hashedNewPassword,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    console.error('Error updating password:', err);
+    res.status(500).json({ error: 'Failed to update password' });
   }
 });
 
@@ -1583,6 +1716,9 @@ app.post('/api/users', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'User with this phone number already exists' });
     }
 
+    // Hash the password before storing
+    const hashedPassword = await bcrypt.hash(password, 10);
+
     // Create user
     const user = await prisma.user.create({
       data: {
@@ -1590,7 +1726,7 @@ app.post('/api/users', authenticateToken, async (req, res) => {
         lastName,
         email,
         phone,
-        password,
+        password: hashedPassword,
         role,
         organizationId,
         updatedAt: new Date()
@@ -1649,7 +1785,8 @@ app.get('/api/organizations', authenticateToken, async (req: any, res) => {
       select: {
         id: true,
         name: true,
-        address: true
+        address: true,
+        incoming_dollar_value: true
       }
     });
     res.json(organizations);
@@ -2385,7 +2522,7 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid organization ID' });
     }
 
-    const { name, address } = req.body;
+    const { name, address, incoming_dollar_value } = req.body;
 
     // Validate required fields
     if (!name) {
@@ -2430,16 +2567,25 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       }
     }
 
+    // Prepare update data
+    const updateData: any = {
+      name,
+      address: address || existing.address
+    };
+
+    // Add incoming_dollar_value if provided
+    if (incoming_dollar_value !== undefined) {
+      updateData.incoming_dollar_value = parseFloat(incoming_dollar_value);
+    }
+
     const updatedOrganization = await prisma.organization.update({
       where: { id: organizationId },
-      data: {
-        name,
-        address: address || existing.address
-      },
+      data: updateData,
       select: {
         id: true,
         name: true,
-        address: true
+        address: true,
+        incoming_dollar_value: true
       }
     });
 
@@ -2619,6 +2765,29 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
+    // Find Walmart donorId
+    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
+    if (walmartDonor) {
+      // Fetch all Donations for Walmart
+      const walmartDonations = await prisma.donation.findMany({
+        where: { donorId: walmartDonor.id, organizationId },
+        select: { id: true, createdAt: true }
+      });
+      console.log('Walmart Donations:', walmartDonations);
+      // Fetch all DonationItems for Walmart Donations
+      const walmartDonationIds = walmartDonations.map(d => d.id);
+      if (walmartDonationIds.length > 0) {
+        const walmartItems = await prisma.donationItem.findMany({
+          where: { donationId: { in: walmartDonationIds } },
+          select: { id: true, donationId: true, categoryId: true, weightKg: true }
+        });
+        console.log('Walmart DonationItems:', walmartItems);
+      } else {
+        console.log('No Walmart Donations found.');
+      }
+    } else {
+      console.log('No Walmart donor found.');
+    }
     // Fetch categories
     const categories = await prisma.donationCategory.findMany({
       where: { organizationId },
@@ -2637,6 +2806,8 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
       },
       select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
     });
+    // Debug log: print first 10 items and their donorId
+    console.log('Sample donation items:', items.slice(0, 10).map(i => ({ categoryId: i.categoryId, weightKg: i.weightKg, donorId: i.Donation?.donorId })));
     // Build donor x category table
     const donorIdToName: Record<number, string> = {};
     donors.forEach(d => { donorIdToName[d.id] = d.name; });
@@ -2770,3 +2941,582 @@ app.get('/api/shift-employees', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 }); 
+
+// Get inventory by donor and category for a specific month/year
+app.get('/api/inventory/donor-category-table', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+    // Convert month and year to numbers
+    const monthNum = Number(month);
+    const yearNum = Number(year);
+    let startDate: Date, endDate: Date;
+    if (!yearNum) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!monthNum || monthNum === 0 || month === 'all') {
+      startDate = new Date(yearNum, 0, 1);
+      endDate = new Date(yearNum, 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(yearNum, monthNum - 1, 1);
+      endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
+    }
+    // Fetch donors
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+    // Find Walmart donorId
+    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
+    if (walmartDonor) {
+      // Fetch all Donations for Walmart
+      const walmartDonations = await prisma.donation.findMany({
+        where: { donorId: walmartDonor.id, organizationId },
+        select: { id: true, createdAt: true }
+      });
+      console.log('Walmart Donations:', walmartDonations);
+      // Fetch all DonationItems for Walmart Donations
+      const walmartDonationIds = walmartDonations.map(d => d.id);
+      if (walmartDonationIds.length > 0) {
+        const walmartItems = await prisma.donationItem.findMany({
+          where: { donationId: { in: walmartDonationIds } },
+          select: { id: true, donationId: true, categoryId: true, weightKg: true }
+        });
+        console.log('Walmart DonationItems:', walmartItems);
+      } else {
+        console.log('No Walmart Donations found.');
+      }
+    } else {
+      console.log('No Walmart donor found.');
+    }
+    // Fetch categories
+    const categories = await prisma.donationCategory.findMany({
+      where: { organizationId },
+      select: { id: true, name: true }
+    });
+    // Fetch all donation items for this org and date range
+    const items = await prisma.donationItem.findMany({
+      where: {
+        Donation: {
+          organizationId,
+          createdAt: {
+            gte: startDate,
+            lte: endDate
+          }
+        }
+      },
+      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+    });
+    // Build donor x category table
+    const donorIdToName: Record<number, string> = {};
+    donors.forEach(d => { donorIdToName[d.id] = d.name; });
+    const catIdToName: Record<number, string> = {};
+    categories.forEach(c => { catIdToName[c.id] = c.name; });
+    // Initialize table: donorName -> categoryName -> 0
+    const table: Record<string, Record<string, number>> = {};
+    donors.forEach(donor => {
+      table[donor.name] = {};
+      categories.forEach(cat => {
+        table[donor.name][cat.name] = 0;
+      });
+    });
+    // Fill table with actual weights
+    items.forEach(item => {
+      const donorName = donorIdToName[Number(item.Donation.donorId)];
+      const catName = catIdToName[Number(item.categoryId)];
+      if (donorName && catName) {
+        let val = item.weightKg;
+        if (unit === 'Pounds (lb)') val = +(val * 2.20462);
+        table[donorName][catName] += val;
+      }
+    });
+    res.json({
+      donors: donors.map(d => d.name),
+      categories: categories.map(c => c.name),
+      table
+    });
+  } catch (err) {
+    console.error('Error fetching donor-category inventory table:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Forgot password endpoint - send OTP
+app.post('/api/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      return res.status(404).json({ error: 'This email is not yet registered. Please check your email address or contact support.' });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Store OTP in database with expiration (15 minutes)
+    const otpExpiry = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes from now
+    
+    // Store OTP in memory for testing
+    if (!global.otpStore) {
+      global.otpStore = {};
+    }
+    global.otpStore[email] = {
+      otp,
+      expiry: otpExpiry,
+      attempts: 0
+    };
+
+    // Check if email configuration is available
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      console.log('Email configuration not found. OTP for testing:', otp);
+      res.json({ 
+        message: 'Password reset code sent to your email',
+        // For testing purposes, include OTP in response when email is not configured
+        otp: process.env.NODE_ENV === 'development' ? otp : undefined
+      });
+      return;
+    }
+
+    // Send OTP via email
+    try {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Password Reset Code - Hungy',
+        text: `Your password reset code is: ${otp}\n\nThis code will expire in 15 minutes.\n\nIf you didn't request this, please ignore this email.`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #ff9800;">Password Reset Request</h2>
+            <p>You requested a password reset for your Hungy account.</p>
+            <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+              <h3 style="margin: 0; color: #333; font-size: 24px; letter-spacing: 4px;">${otp}</h3>
+            </div>
+            <p><strong>This code will expire in 15 minutes.</strong></p>
+            <p>If you didn't request this password reset, please ignore this email.</p>
+            <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+            <p style="color: #666; font-size: 12px;">This is an automated message from Hungy.</p>
+          </div>
+        `
+      };
+
+      await transporter.sendMail(mailOptions);
+      res.json({ message: 'Password reset code sent to your email' });
+    } catch (emailErr) {
+      console.error('Failed to send email:', emailErr);
+      res.status(500).json({ error: 'Failed to send reset code. Please try again.' });
+    }
+  } catch (err) {
+    console.error('Error in forgot password:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Verify OTP endpoint
+app.post('/api/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    // Check if OTP exists and is valid
+    if (!global.otpStore || !global.otpStore[email]) {
+      return res.status(400).json({ error: 'Invalid or expired OTP' });
+    }
+
+    const otpData = global.otpStore[email];
+
+    // Check if OTP is expired
+    if (new Date() > otpData.expiry) {
+      delete global.otpStore[email];
+      return res.status(400).json({ error: 'OTP has expired' });
+    }
+
+    // Check if too many attempts
+    if (otpData.attempts >= 3) {
+      delete global.otpStore[email];
+      return res.status(400).json({ error: 'Too many failed attempts. Please request a new code.' });
+    }
+
+    // Verify OTP
+    if (otpData.otp !== otp) {
+      otpData.attempts++;
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    // Generate reset token
+    const resetToken = jwt.sign({ email, type: 'password_reset' }, JWT_SECRET, { expiresIn: '15m' });
+
+    // Clear OTP after successful verification
+    delete global.otpStore[email];
+
+    res.json({ 
+      message: 'OTP verified successfully',
+      resetToken 
+    });
+  } catch (err) {
+    console.error('Error verifying OTP:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reset password endpoint
+app.post('/api/reset-password', async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body;
+
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ error: 'Reset token and new password are required' });
+    }
+
+    // Validate password
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+    }
+
+    // Verify reset token
+    let decoded: any;
+    try {
+      decoded = jwt.verify(resetToken, JWT_SECRET);
+    } catch (err) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    if (decoded.type !== 'password_reset') {
+      return res.status(400).json({ error: 'Invalid token type' });
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({ where: { email: decoded.email } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the password
+    await prisma.user.update({
+      where: { email: decoded.email },
+      data: { 
+        password: hashedPassword,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (err) {
+    console.error('Error resetting password:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- Weighing Management Endpoints ---
+
+// Get all weighing categories for the organization
+app.get('/api/weighing-categories', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const categories = await prisma.weighingCategory.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        name: true,
+        description: true
+      }
+    });
+    res.json(categories);
+  } catch (err) {
+    console.error('Error fetching weighing categories:', err);
+    res.status(500).json({ error: 'Failed to fetch weighing categories' });
+  }
+});
+
+// Create new weighing category
+app.post('/api/weighing-categories', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { name, description } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+
+    // Check if category with same name exists
+    const existing = await prisma.weighingCategory.findFirst({
+      where: { name, organizationId }
+    });
+
+    if (existing) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    const category = await prisma.weighingCategory.create({
+      data: {
+        name,
+        description: description || '',
+        organizationId
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true
+      }
+    });
+
+    res.json(category);
+  } catch (err) {
+    console.error('Error creating weighing category:', err);
+    res.status(500).json({ error: 'Failed to create weighing category' });
+  }
+});
+
+// Get all weighing records for the organization
+app.get('/api/weighing', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const weighings = await prisma.weighing.findMany({
+      where: { organizationId },
+      include: {
+        WeighingCategory: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+    res.json(weighings);
+  } catch (err) {
+    console.error('Error fetching weighing records:', err);
+    res.status(500).json({ error: 'Failed to fetch weighing records' });
+  }
+});
+
+// Create new weighing record
+app.post('/api/weighing', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const { categoryId, kilogram, pound, notes } = req.body;
+
+    if (!categoryId || (kilogram === undefined && pound === undefined)) {
+      return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+    }
+
+    // Validate category exists and belongs to organization
+    const category = await prisma.weighingCategory.findFirst({
+      where: { id: categoryId, organizationId }
+    });
+
+    if (!category) {
+      return res.status(400).json({ error: 'Invalid category' });
+    }
+
+    // Convert pound to kilogram if only pound is provided
+    let finalKilogram = kilogram;
+    let finalPound = pound;
+    
+    if (kilogram === undefined && pound !== undefined) {
+      finalKilogram = pound / 2.20462;
+    } else if (pound === undefined && kilogram !== undefined) {
+      finalPound = kilogram * 2.20462;
+    }
+
+    const weighing = await prisma.weighing.create({
+      data: {
+        categoryId,
+        kilogram: finalKilogram,
+        pound: finalPound,
+        notes: notes || '',
+        organizationId
+      },
+      include: {
+        WeighingCategory: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      }
+    });
+
+    res.json(weighing);
+  } catch (err) {
+    console.error('Error creating weighing record:', err);
+    res.status(500).json({ error: 'Failed to create weighing record' });
+  }
+});
+
+// Update weighing record
+app.put('/api/weighing/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const weighingId = parseInt(req.params.id);
+    const { categoryId, kilogram, pound, notes } = req.body;
+
+    if (!categoryId || (kilogram === undefined && pound === undefined)) {
+      return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+    }
+
+    // Check if weighing record exists and belongs to organization
+    const existing = await prisma.weighing.findFirst({
+      where: { id: weighingId, organizationId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Weighing record not found' });
+    }
+
+    // Validate category exists and belongs to organization
+    const category = await prisma.weighingCategory.findFirst({
+      where: { id: categoryId, organizationId }
+    });
+
+    if (!category) {
+      return res.status(400).json({ error: 'Invalid category' });
+    }
+
+    // Convert pound to kilogram if only pound is provided
+    let finalKilogram = kilogram;
+    let finalPound = pound;
+    
+    if (kilogram === undefined && pound !== undefined) {
+      finalKilogram = pound / 2.20462;
+    } else if (pound === undefined && kilogram !== undefined) {
+      finalPound = kilogram * 2.20462;
+    }
+
+    const updatedWeighing = await prisma.weighing.update({
+      where: { id: weighingId },
+      data: {
+        categoryId,
+        kilogram: finalKilogram,
+        pound: finalPound,
+        notes: notes || '',
+        updatedAt: new Date()
+      },
+      include: {
+        WeighingCategory: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      }
+    });
+
+    res.json(updatedWeighing);
+  } catch (err) {
+    console.error('Error updating weighing record:', err);
+    res.status(500).json({ error: 'Failed to update weighing record' });
+  }
+});
+
+// Delete weighing record
+app.delete('/api/weighing/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const weighingId = parseInt(req.params.id);
+
+    // Check if weighing record exists and belongs to organization
+    const existing = await prisma.weighing.findFirst({
+      where: { id: weighingId, organizationId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Weighing record not found' });
+    }
+
+    await prisma.weighing.delete({
+      where: { id: weighingId }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting weighing record:', err);
+    res.status(500).json({ error: 'Failed to delete weighing record' });
+  }
+});
+
+// Get weighing statistics for the organization
+app.get('/api/weighing/stats', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    
+    // Get total counts
+    const [totalWeighings, totalCategories] = await Promise.all([
+      prisma.weighing.count({ where: { organizationId } }),
+      prisma.weighingCategory.count({ where: { organizationId } })
+    ]);
+
+    // Get recent weighings (last 10)
+    const recentWeighings = await prisma.weighing.findMany({
+      where: { organizationId },
+      include: {
+        WeighingCategory: {
+          select: {
+            name: true
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc'
+      },
+      take: 10
+    });
+
+    // Get category totals
+    const categoryTotals = await prisma.weighing.groupBy({
+      by: ['categoryId'],
+      where: { organizationId },
+      _sum: {
+        kilogram: true,
+        pound: true
+      }
+    });
+
+    // Get category names
+    const categoryIds = categoryTotals.map(c => c.categoryId);
+    const categories = await prisma.weighingCategory.findMany({
+      where: { id: { in: categoryIds } },
+      select: { id: true, name: true }
+    });
+
+    const categoryStats = categoryTotals.map(total => {
+      const category = categories.find(c => c.id === total.categoryId);
+      return {
+        categoryName: category?.name || 'Unknown',
+        totalKilogram: total._sum.kilogram || 0,
+        totalPound: total._sum.pound || 0
+      };
+    });
+
+    res.json({
+      totalWeighings,
+      totalCategories,
+      recentWeighings,
+      categoryStats
+    });
+  } catch (err) {
+    console.error('Error fetching weighing statistics:', err);
+    res.status(500).json({ error: 'Failed to fetch weighing statistics' });
+  }
+});

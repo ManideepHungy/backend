@@ -51,19 +51,16 @@ model Donor {
 }
 
 model Organization {
-  id                  Int                @id @default(autoincrement())
-  name                String             @unique
-  address             String?
-  incoming_dollar_value Float?
-  Donation            Donation[]
-  DonationCategory    DonationCategory[]
-  Donor               Donor[]
-  RecurringShift      RecurringShift[]
-  Shift               Shift[]
-  ShiftCategory       ShiftCategory[]
-  User                User[]
-  WeighingCategory    WeighingCategory[]
-  Weighing            Weighing[]
+  id               Int                @id @default(autoincrement())
+  name             String             @unique
+  address          String?
+  Donation         Donation[]
+  DonationCategory DonationCategory[]
+  Donor            Donor[]
+  RecurringShift   RecurringShift[]
+  Shift            Shift[]
+  ShiftCategory    ShiftCategory[]
+  User             User[]
 }
 
 model RecurringShift {
@@ -141,28 +138,4 @@ enum UserRole {
   VOLUNTEER
   STAFF
   ADMIN
-}
-
-model WeighingCategory {
-  id             Int       @id @default(autoincrement())
-  name           String
-  description    String?
-  organizationId Int
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  Organization   Organization @relation(fields: [organizationId], references: [id])
-  Weighing       Weighing[]
-}
-
-model Weighing {
-  id             Int             @id @default(autoincrement())
-  categoryId     Int
-  kilogram       Float
-  pound          Float
-  notes          String?
-  organizationId Int
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  WeighingCategory WeighingCategory @relation(fields: [categoryId], references: [id])
-  Organization   Organization    @relation(fields: [organizationId], references: [id])
 }

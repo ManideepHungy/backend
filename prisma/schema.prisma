@@ -51,16 +51,18 @@ model Donor {
 }
 
 model Organization {
-  id               Int                @id @default(autoincrement())
-  name             String             @unique
-  address          String?
-  Donation         Donation[]
-  DonationCategory DonationCategory[]
-  Donor            Donor[]
-  RecurringShift   RecurringShift[]
-  Shift            Shift[]
-  ShiftCategory    ShiftCategory[]
-  User             User[]
+  id                    Int                @id @default(autoincrement())
+  name                  String             @unique
+  address               String?
+  incoming_dollar_value Float?             @default(10)
+  Donation              Donation[]
+  DonationCategory      DonationCategory[]
+  Donor                 Donor[]
+  RecurringShift        RecurringShift[]
+  Shift                 Shift[]
+  ShiftCategory         ShiftCategory[]
+  User                  User[]
+  WeighingCategory      WeighingCategory[]
 }
 
 model RecurringShift {
@@ -114,7 +116,7 @@ model ShiftSignup {
   createdAt   DateTime   @default(now())
   Donation    Donation[]
   Shift       Shift      @relation(fields: [shiftId], references: [id])
-  User        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  User        User       @relation(fields: [userId], references: [id])
 }
 
 model User {
@@ -132,6 +134,15 @@ model User {
   updatedAt        DateTime
   ShiftSignup      ShiftSignup[]
   Organization     Organization  @relation(fields: [organizationId], references: [id])
+}
+
+model WeighingCategory {
+  id             Int          @id @default(autoincrement())
+  organizationId Int
+  kilogram_kg_   Float        @map("kilogram(kg)")
+  pound_lb_      Float        @map("pound(lb)")
+  category       String
+  Organization   Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 }
 
 enum UserRole {

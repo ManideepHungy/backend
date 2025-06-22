@@ -1744,7 +1744,8 @@ app.get('/api/organizations', authenticateToken, async (req, res) => {
             select: {
                 id: true,
                 name: true,
-                address: true
+                address: true,
+                incoming_dollar_value: true
             }
         });
         res.json(organizations);
@@ -2424,7 +2425,7 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
         if (!organizationId) {
             return res.status(400).json({ error: 'Invalid organization ID' });
         }
-        const { name, address } = req.body;
+        const { name, address, incoming_dollar_value } = req.body;
         // Validate required fields
         if (!name) {
             return res.status(400).json({ error: 'Name is required' });
@@ -2463,16 +2464,23 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
                 return res.status(400).json({ error: 'Organization with this name already exists' });
             }
         }
+        // Prepare update data
+        const updateData = {
+            name,
+            address: address || existing.address
+        };
+        // Add incoming_dollar_value if provided
+        if (incoming_dollar_value !== undefined) {
+            updateData.incoming_dollar_value = parseFloat(incoming_dollar_value);
+        }
         const updatedOrganization = await prisma.organization.update({
             where: { id: organizationId },
-            data: {
-                name,
-                address: address || existing.address
-            },
+            data: updateData,
             select: {
                 id: true,
                 name: true,
-                address: true
+                address: true,
+                incoming_dollar_value: true
             }
         });
         res.json(updatedOrganization);
@@ -2935,7 +2943,7 @@ app.post('/api/forgot-password', async (req, res) => {
         // Find user by email
         const user = await prisma.user.findUnique({ where: { email } });
         if (!user) {
-            return res.status(404).json({ error: 'No user found with this email address' });
+            return res.status(404).json({ error: 'This email is not yet registered. Please check your email address or contact support.' });
         }
         // Generate 6-digit OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -3084,5 +3092,244 @@ app.post('/api/reset-password', async (req, res) => {
     catch (err) {
         console.error('Error resetting password:', err);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// --- Weighing Management Endpoints ---
+// Get all weighing categories for the organization
+app.get('/api/weighing-categories', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const categories = await prisma.weighingCategory.findMany({
+            where: { organizationId },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            }
+        });
+        res.json(categories);
+    }
+    catch (err) {
+        console.error('Error fetching weighing categories:', err);
+        res.status(500).json({ error: 'Failed to fetch weighing categories' });
+    }
+});
+// Create new weighing category
+app.post('/api/weighing-categories', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const { category, kilogram, pound } = req.body;
+        if (!category) {
+            return res.status(400).json({ error: 'Category name is required' });
+        }
+        if (kilogram === undefined && pound === undefined) {
+            return res.status(400).json({ error: 'At least one weight measurement is required' });
+        }
+        // Convert pound to kilogram if only pound is provided
+        let finalKilogram = kilogram;
+        let finalPound = pound;
+        if (kilogram === undefined && pound !== undefined) {
+            finalKilogram = pound / 2.20462;
+        }
+        else if (pound === undefined && kilogram !== undefined) {
+            finalPound = kilogram * 2.20462;
+        }
+        const weighingCategory = await prisma.weighingCategory.create({
+            data: {
+                category,
+                kilogram_kg_: finalKilogram,
+                pound_lb_: finalPound,
+                organizationId
+            },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            }
+        });
+        res.json(weighingCategory);
+    }
+    catch (err) {
+        console.error('Error creating weighing category:', err);
+        res.status(500).json({ error: 'Failed to create weighing category' });
+    }
+});
+// Get all weighing records for the organization
+app.get('/api/weighing', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const weighings = await prisma.weighingCategory.findMany({
+            where: { organizationId },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            },
+            orderBy: {
+                id: 'desc'
+            }
+        });
+        res.json(weighings);
+    }
+    catch (err) {
+        console.error('Error fetching weighing records:', err);
+        res.status(500).json({ error: 'Failed to fetch weighing records' });
+    }
+});
+// Create new weighing record
+app.post('/api/weighing', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const { category, kilogram, pound } = req.body;
+        if (!category || (kilogram === undefined && pound === undefined)) {
+            return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+        }
+        // Convert pound to kilogram if only pound is provided
+        let finalKilogram = kilogram;
+        let finalPound = pound;
+        if (kilogram === undefined && pound !== undefined) {
+            finalKilogram = pound / 2.20462;
+        }
+        else if (pound === undefined && kilogram !== undefined) {
+            finalPound = kilogram * 2.20462;
+        }
+        const weighing = await prisma.weighingCategory.create({
+            data: {
+                category,
+                kilogram_kg_: finalKilogram,
+                pound_lb_: finalPound,
+                organizationId
+            },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            }
+        });
+        res.json(weighing);
+    }
+    catch (err) {
+        console.error('Error creating weighing record:', err);
+        res.status(500).json({ error: 'Failed to create weighing record' });
+    }
+});
+// Update weighing record
+app.put('/api/weighing/:id', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const weighingId = parseInt(req.params.id);
+        const { category, kilogram, pound } = req.body;
+        if (!category || (kilogram === undefined && pound === undefined)) {
+            return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+        }
+        // Check if weighing record exists and belongs to organization
+        const existing = await prisma.weighingCategory.findFirst({
+            where: { id: weighingId, organizationId }
+        });
+        if (!existing) {
+            return res.status(404).json({ error: 'Weighing record not found' });
+        }
+        // Convert pound to kilogram if only pound is provided
+        let finalKilogram = kilogram;
+        let finalPound = pound;
+        if (kilogram === undefined && pound !== undefined) {
+            finalKilogram = pound / 2.20462;
+        }
+        else if (pound === undefined && kilogram !== undefined) {
+            finalPound = kilogram * 2.20462;
+        }
+        const updatedWeighing = await prisma.weighingCategory.update({
+            where: { id: weighingId },
+            data: {
+                category,
+                kilogram_kg_: finalKilogram,
+                pound_lb_: finalPound
+            },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            }
+        });
+        res.json(updatedWeighing);
+    }
+    catch (err) {
+        console.error('Error updating weighing record:', err);
+        res.status(500).json({ error: 'Failed to update weighing record' });
+    }
+});
+// Delete weighing record
+app.delete('/api/weighing/:id', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const weighingId = parseInt(req.params.id);
+        // Check if weighing record exists and belongs to organization
+        const existing = await prisma.weighingCategory.findFirst({
+            where: { id: weighingId, organizationId }
+        });
+        if (!existing) {
+            return res.status(404).json({ error: 'Weighing record not found' });
+        }
+        await prisma.weighingCategory.delete({
+            where: { id: weighingId }
+        });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Error deleting weighing record:', err);
+        res.status(500).json({ error: 'Failed to delete weighing record' });
+    }
+});
+// Get weighing statistics for the organization
+app.get('/api/weighing/stats', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        // Get total counts
+        const totalWeighings = await prisma.weighingCategory.count({ where: { organizationId } });
+        // Get recent weighings (last 10)
+        const recentWeighings = await prisma.weighingCategory.findMany({
+            where: { organizationId },
+            select: {
+                id: true,
+                category: true,
+                kilogram_kg_: true,
+                pound_lb_: true
+            },
+            orderBy: {
+                id: 'desc'
+            },
+            take: 10
+        });
+        // Get category totals
+        const categoryTotals = await prisma.weighingCategory.groupBy({
+            by: ['category'],
+            where: { organizationId },
+            _sum: {
+                kilogram_kg_: true,
+                pound_lb_: true
+            }
+        });
+        const categoryStats = categoryTotals.map((total) => {
+            return {
+                categoryName: total.category,
+                totalKilogram: total._sum.kilogram_kg_ || 0,
+                totalPound: total._sum.pound_lb_ || 0
+            };
+        });
+        res.json({
+            totalWeighings,
+            totalCategories: categoryStats.length,
+            recentWeighings,
+            categoryStats
+        });
+    }
+    catch (err) {
+        console.error('Error fetching weighing statistics:', err);
+        res.status(500).json({ error: 'Failed to fetch weighing statistics' });
     }
 });

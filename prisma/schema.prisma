@@ -142,6 +142,7 @@ model WeighingCategory {
   kilogram_kg_   Float        @map("kilogram(kg)")
   pound_lb_      Float        @map("pound(lb)")
   category       String
+  noofmeals      Int          @default(0)
   Organization   Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([category, organizationId])

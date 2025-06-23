@@ -150,6 +150,12 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
     try {
         const { month, year } = req.query;
         const organizationId = req.user.organizationId;
+        // Get incoming_dollar_value for this organization
+        const org = await prisma.organization.findUnique({
+            where: { id: organizationId },
+            select: { incoming_dollar_value: true }
+        });
+        const incomingDollarValue = (org === null || org === void 0 ? void 0 : org.incoming_dollar_value) || 0;
         // Get all donors for this organization
         const donors = await prisma.donor.findMany({
             where: { kitchenId: organizationId },
@@ -178,50 +184,28 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
                 Donor: true
             }
         });
-        // Group donations by date and donor, using donation.summary as total weight
-        const groupedData = donations.reduce((acc, donation) => {
-            const dt = new Date(donation.createdAt);
-            const parts = dt.toLocaleString('en-US', {
-                timeZone: 'America/Halifax',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+        // Group donations by donor
+        const donorTotals = {};
+        for (const donor of donors) {
+            donorTotals[donor.name] = { weight: 0, value: 0 };
+        }
+        for (const donation of donations) {
             const donorName = donation.Donor.name;
             const totalWeight = donation.summary;
-            if (!acc[date]) {
-                acc[date] = {
-                    date,
-                    donors: {}
-                };
+            if (donorTotals[donorName]) {
+                donorTotals[donorName].weight += totalWeight;
+                donorTotals[donorName].value += totalWeight * incomingDollarValue;
             }
-            acc[date].donors[donorName] = (acc[date].donors[donorName] || 0) + totalWeight;
-            return acc;
-        }, {});
-        // Convert to array format
-        const tableData = Object.values(groupedData).map((row) => ({
-            date: row.date,
-            ...row.donors
-        }));
-        // Calculate totals
-        const totals = donors.reduce((acc, donor) => {
-            acc[donor.name] = tableData.reduce((sum, row) => sum + (row[donor.name] || 0), 0);
-            return acc;
-        }, {});
-        // Calculate row totals
-        const rowTotals = tableData.map((row) => donors.reduce((sum, donor) => sum + (row[donor.name] || 0), 0));
-        // Calculate grand total
-        const grandTotal = Object.values(totals).reduce((sum, val) => sum + val, 0);
+        }
+        // Calculate grand totals
+        const grandTotalWeight = Object.values(donorTotals).reduce((sum, d) => sum + d.weight, 0);
+        const grandTotalValue = Object.values(donorTotals).reduce((sum, d) => sum + d.value, 0);
         res.json({
             donors: donors.map((d) => d.name),
-            tableData,
-            totals,
-            rowTotals,
-            grandTotal
+            donorTotals,
+            grandTotalWeight,
+            grandTotalValue,
+            incomingDollarValue
         });
     }
     catch (err) {
@@ -3105,7 +3089,8 @@ app.get('/api/weighing-categories', authenticateToken, async (req, res) => {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             }
         });
         res.json(categories);
@@ -3119,7 +3104,7 @@ app.get('/api/weighing-categories', authenticateToken, async (req, res) => {
 app.post('/api/weighing-categories', authenticateToken, async (req, res) => {
     try {
         const organizationId = req.user.organizationId;
-        const { category, weight, unit } = req.body;
+        const { category, weight, unit, noofmeals } = req.body;
         if (!category) {
             return res.status(400).json({ error: 'Category name is required' });
         }
@@ -3147,18 +3132,23 @@ app.post('/api/weighing-categories', authenticateToken, async (req, res) => {
             finalPound = weight;
             finalKilogram = weight / 2.20462;
         }
+        // Round to 2 decimal places
+        finalKilogram = Math.round(finalKilogram * 100) / 100;
+        finalPound = Math.round(finalPound * 100) / 100;
         const weighingCategory = await prisma.weighingCategory.create({
             data: {
                 category,
                 kilogram_kg_: finalKilogram,
                 pound_lb_: finalPound,
+                noofmeals: noofmeals || 0,
                 organizationId
             },
             select: {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             }
         });
         res.json(weighingCategory);
@@ -3178,7 +3168,8 @@ app.get('/api/weighing', authenticateToken, async (req, res) => {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             },
             orderBy: {
                 id: 'desc'
@@ -3195,7 +3186,7 @@ app.get('/api/weighing', authenticateToken, async (req, res) => {
 app.post('/api/weighing', authenticateToken, async (req, res) => {
     try {
         const organizationId = req.user.organizationId;
-        const { category, weight, unit } = req.body;
+        const { category, weight, unit, noofmeals } = req.body;
         if (!category || !weight || weight <= 0) {
             return res.status(400).json({ error: 'Category and valid weight value are required' });
         }
@@ -3213,18 +3204,23 @@ app.post('/api/weighing', authenticateToken, async (req, res) => {
             finalPound = weight;
             finalKilogram = weight / 2.20462;
         }
+        // Round to 2 decimal places
+        finalKilogram = Math.round(finalKilogram * 100) / 100;
+        finalPound = Math.round(finalPound * 100) / 100;
         const weighing = await prisma.weighingCategory.create({
             data: {
                 category,
                 kilogram_kg_: finalKilogram,
                 pound_lb_: finalPound,
+                noofmeals: noofmeals || 0,
                 organizationId
             },
             select: {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             }
         });
         res.json(weighing);
@@ -3239,7 +3235,7 @@ app.put('/api/weighing/:id', authenticateToken, async (req, res) => {
     try {
         const organizationId = req.user.organizationId;
         const weighingId = parseInt(req.params.id);
-        const { category, weight, unit } = req.body;
+        const { category, weight, unit, noofmeals } = req.body;
         if (!category || !weight || weight <= 0) {
             return res.status(400).json({ error: 'Category and valid weight value are required' });
         }
@@ -3264,18 +3260,23 @@ app.put('/api/weighing/:id', authenticateToken, async (req, res) => {
             finalPound = weight;
             finalKilogram = weight / 2.20462;
         }
+        // Round to 2 decimal places
+        finalKilogram = Math.round(finalKilogram * 100) / 100;
+        finalPound = Math.round(finalPound * 100) / 100;
         const updatedWeighing = await prisma.weighingCategory.update({
             where: { id: weighingId },
             data: {
                 category,
                 kilogram_kg_: finalKilogram,
-                pound_lb_: finalPound
+                pound_lb_: finalPound,
+                noofmeals: noofmeals || 0
             },
             select: {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             }
         });
         res.json(updatedWeighing);
@@ -3320,7 +3321,8 @@ app.get('/api/weighing/stats', authenticateToken, async (req, res) => {
                 id: true,
                 category: true,
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             },
             orderBy: {
                 id: 'desc'
@@ -3333,14 +3335,16 @@ app.get('/api/weighing/stats', authenticateToken, async (req, res) => {
             where: { organizationId },
             _sum: {
                 kilogram_kg_: true,
-                pound_lb_: true
+                pound_lb_: true,
+                noofmeals: true
             }
         });
         const categoryStats = categoryTotals.map((total) => {
             return {
                 categoryName: total.category,
                 totalKilogram: total._sum.kilogram_kg_ || 0,
-                totalPound: total._sum.pound_lb_ || 0
+                totalPound: total._sum.pound_lb_ || 0,
+                totalMeals: total._sum.noofmeals || 0
             };
         });
         res.json({

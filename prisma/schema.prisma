@@ -143,6 +143,8 @@ model WeighingCategory {
   pound_lb_      Float        @map("pound(lb)")
   category       String
   Organization   Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([category, organizationId])
 }
 
 enum UserRole {

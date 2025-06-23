@@ -3252,24 +3252,39 @@ app.get('/api/weighing-categories', authenticateToken, async (req: any, res) => 
 app.post('/api/weighing-categories', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { category, kilogram, pound } = req.body;
+    const { category, weight, unit } = req.body;
 
     if (!category) {
       return res.status(400).json({ error: 'Category name is required' });
     }
 
-    if (kilogram === undefined && pound === undefined) {
-      return res.status(400).json({ error: 'At least one weight measurement is required' });
+    if (!weight || weight <= 0) {
+      return res.status(400).json({ error: 'Valid weight value is required' });
     }
 
-    // Convert pound to kilogram if only pound is provided
-    let finalKilogram = kilogram;
-    let finalPound = pound;
+    if (!unit || !['kg', 'lb'].includes(unit)) {
+      return res.status(400).json({ error: 'Unit must be either "kg" or "lb"' });
+    }
+
+    // Check if category with same name already exists for this organization
+    const existingCategory = await prisma.weighingCategory.findFirst({
+      where: { category, organizationId }
+    });
+
+    if (existingCategory) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    // Calculate both kg and lb values
+    let finalKilogram: number;
+    let finalPound: number;
     
-    if (kilogram === undefined && pound !== undefined) {
-      finalKilogram = pound / 2.20462;
-    } else if (pound === undefined && kilogram !== undefined) {
-      finalPound = kilogram * 2.20462;
+    if (unit === 'kg') {
+      finalKilogram = weight;
+      finalPound = weight * 2.20462;
+    } else {
+      finalPound = weight;
+      finalKilogram = weight / 2.20462;
     }
 
     const weighingCategory = await prisma.weighingCategory.create({
@@ -3321,20 +3336,26 @@ app.get('/api/weighing', authenticateToken, async (req: any, res) => {
 app.post('/api/weighing', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { category, kilogram, pound } = req.body;
+    const { category, weight, unit } = req.body;
 
-    if (!category || (kilogram === undefined && pound === undefined)) {
-      return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+    if (!category || !weight || weight <= 0) {
+      return res.status(400).json({ error: 'Category and valid weight value are required' });
     }
 
-    // Convert pound to kilogram if only pound is provided
-    let finalKilogram = kilogram;
-    let finalPound = pound;
+    if (!unit || !['kg', 'lb'].includes(unit)) {
+      return res.status(400).json({ error: 'Unit must be either "kg" or "lb"' });
+    }
+
+    // Calculate both kg and lb values
+    let finalKilogram: number;
+    let finalPound: number;
     
-    if (kilogram === undefined && pound !== undefined) {
-      finalKilogram = pound / 2.20462;
-    } else if (pound === undefined && kilogram !== undefined) {
-      finalPound = kilogram * 2.20462;
+    if (unit === 'kg') {
+      finalKilogram = weight;
+      finalPound = weight * 2.20462;
+    } else {
+      finalPound = weight;
+      finalKilogram = weight / 2.20462;
     }
 
     const weighing = await prisma.weighingCategory.create({
@@ -3364,10 +3385,14 @@ app.put('/api/weighing/:id', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
     const weighingId = parseInt(req.params.id);
-    const { category, kilogram, pound } = req.body;
+    const { category, weight, unit } = req.body;
 
-    if (!category || (kilogram === undefined && pound === undefined)) {
-      return res.status(400).json({ error: 'Category and at least one weight measurement are required' });
+    if (!category || !weight || weight <= 0) {
+      return res.status(400).json({ error: 'Category and valid weight value are required' });
+    }
+
+    if (!unit || !['kg', 'lb'].includes(unit)) {
+      return res.status(400).json({ error: 'Unit must be either "kg" or "lb"' });
     }
 
     // Check if weighing record exists and belongs to organization
@@ -3379,14 +3404,16 @@ app.put('/api/weighing/:id', authenticateToken, async (req: any, res) => {
       return res.status(404).json({ error: 'Weighing record not found' });
     }
 
-    // Convert pound to kilogram if only pound is provided
-    let finalKilogram = kilogram;
-    let finalPound = pound;
+    // Calculate both kg and lb values
+    let finalKilogram: number;
+    let finalPound: number;
     
-    if (kilogram === undefined && pound !== undefined) {
-      finalKilogram = pound / 2.20462;
-    } else if (pound === undefined && kilogram !== undefined) {
-      finalPound = kilogram * 2.20462;
+    if (unit === 'kg') {
+      finalKilogram = weight;
+      finalPound = weight * 2.20462;
+    } else {
+      finalPound = weight;
+      finalKilogram = weight / 2.20462;
     }
 
     const updatedWeighing = await prisma.weighingCategory.update({

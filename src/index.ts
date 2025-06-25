@@ -179,7 +179,40 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
       }
     });
 
-    // Group donations by donor
+    // Group donations by date and donor, using donation.summary as total weight
+    const groupedData = donations.reduce((acc: any, donation: any) => {
+      const dt = new Date(donation.createdAt);
+      const parts = dt.toLocaleString('en-US', {
+        timeZone: 'America/Halifax',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).split('/');
+      // Add one day to match database data
+      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+      nextDay.setDate(nextDay.getDate() + 1);
+      const date = nextDay.toISOString().split('T')[0];
+      const donorName = donation.Donor.name;
+      const totalWeight = donation.summary;
+
+      if (!acc[date]) {
+        acc[date] = {
+          date,
+          donors: {}
+        };
+      }
+
+      acc[date].donors[donorName] = (acc[date].donors[donorName] || 0) + totalWeight;
+      return acc;
+    }, {});
+
+    // Convert to array format
+    const tableData = Object.values(groupedData).map((row: any) => ({
+      date: row.date,
+      ...row.donors
+    }));
+
+    // Calculate totals for each donor
     const donorTotals: { [donor: string]: { weight: number, value: number } } = {};
     for (const donor of donors) {
       donorTotals[donor.name] = { weight: 0, value: 0 };
@@ -193,12 +226,28 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
       }
     }
 
+    // Calculate totals
+    const totals = donors.reduce((acc: any, donor: any) => {
+      acc[donor.name] = tableData.reduce((sum: number, row: any) => sum + (row[donor.name] || 0), 0);
+      return acc;
+    }, {});
+
+    // Calculate row totals
+    const rowTotals = tableData.map((row: any) => 
+      donors.reduce((sum: number, donor: any) => sum + (row[donor.name] || 0), 0)
+    );
+
     // Calculate grand totals
     const grandTotalWeight = Object.values(donorTotals).reduce((sum, d) => sum + d.weight, 0);
     const grandTotalValue = Object.values(donorTotals).reduce((sum, d) => sum + d.value, 0);
+    const grandTotal = Object.values(totals).reduce((sum: number, val: any) => sum + val, 0);
 
     res.json({
       donors: donors.map((d: any) => d.name),
+      tableData: tableData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
+      totals,
+      rowTotals,
+      grandTotal,
       donorTotals,
       grandTotalWeight,
       grandTotalValue,

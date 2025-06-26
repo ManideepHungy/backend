@@ -3566,3 +3566,65 @@ app.get('/api/weighing/stats', authenticateToken, async (req: any, res) => {
     res.status(500).json({ error: 'Failed to fetch weighing statistics' });
   }
 });
+
+// Update organization incoming dollar value only
+app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    const { incoming_dollar_value } = req.body;
+
+    // Validate incoming_dollar_value
+    if (incoming_dollar_value === undefined || incoming_dollar_value === null) {
+      return res.status(400).json({ error: 'Incoming dollar value is required' });
+    }
+
+    const parsedValue = parseFloat(incoming_dollar_value);
+    if (isNaN(parsedValue) || parsedValue < 0) {
+      return res.status(400).json({ error: 'Invalid incoming dollar value. Must be a positive number.' });
+    }
+
+    // Check if organization exists and user has access
+    const reqAny = req as any;
+    const userOrganizationId = reqAny.user.organizationId;
+    
+    if (organizationId !== userOrganizationId) {
+      return res.status(403).json({ error: 'Access denied. You can only update your own organization.' });
+    }
+
+    const existing = await prisma.organization.findUnique({
+      where: { id: organizationId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    console.log(`Updating incoming_dollar_value for org ${organizationId} from ${existing.incoming_dollar_value} to ${parsedValue}`);
+
+    // Update only the incoming_dollar_value
+    const updatedOrganization = await prisma.organization.update({
+      where: { id: organizationId },
+      data: {
+        incoming_dollar_value: parsedValue
+      },
+      select: {
+        id: true,
+        name: true,
+        address: true,
+        incoming_dollar_value: true
+      }
+    });
+
+    console.log('Successfully updated incoming_dollar_value:', updatedOrganization);
+    res.json(updatedOrganization);
+  } catch (err) {
+    console.error('Error updating incoming dollar value:', err);
+    res.status(500).json({ error: 'Failed to update incoming dollar value' });
+  }
+});
+
+// Delete organization

@@ -407,30 +407,43 @@ app.get('/api/shift-categories', authenticateToken, async (req: any, res) => {
   }
 });
 
-// Outgoing stats: meals distributed by shift category and date (for dashboard)
+// Outgoing stats: meals distributed by shift category and shift name (for dashboard)
 app.get('/api/outgoing-stats', authenticateToken, async (req: any, res) => {
   try {
+    const { month, year } = req.query;
     const organizationId = req.user.organizationId;
-
+    // Get date range based on month/year
+    let startDate: Date, endDate: Date;
+    if (!year) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!month || parseInt(month) === 0) {
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
     // Get all shift categories for this organization
     const categories = await prisma.shiftCategory.findMany({
       where: { organizationId },
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
-    const categoryIdToName: Record<number, string> = {};
-    categories.forEach((cat: any) => { categoryIdToName[cat.id] = cat.name; });
-
-    // Get all shifts for this organization
+    // Get all shifts for this organization and date range
     const shifts = await prisma.shift.findMany({
-      where: { organizationId },
+      where: {
+        organizationId,
+        startTime: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
       orderBy: { startTime: 'asc' },
-      select: { id: true, shiftCategoryId: true, startTime: true }
+      select: { id: true, name: true, shiftCategoryId: true, startTime: true }
     });
-
-    // Build a map: shiftId -> { date, categoryName }
-    const shiftIdToDate: Record<number, string> = {};
-    const shiftIdToCategory: Record<number, string> = {};
+    // Build a map: shiftId -> { date, categoryName, shiftName }
+    const shiftIdToInfo: Record<number, { date: string, category: string, shiftName: string }> = {};
     const dateSet = new Set<string>();
     shifts.forEach((shift: any) => {
       const dt = new Date(shift.startTime);
@@ -444,46 +457,153 @@ app.get('/api/outgoing-stats', authenticateToken, async (req: any, res) => {
       const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
       nextDay.setDate(nextDay.getDate() + 1);
       const date = nextDay.toISOString().split('T')[0];
-      shiftIdToDate[shift.id] = date;
-      shiftIdToCategory[shift.id] = categoryIdToName[shift.shiftCategoryId] || '';
+      shiftIdToInfo[shift.id] = {
+        date,
+        category: categories.find((c: any) => c.id === shift.shiftCategoryId)?.name || '',
+        shiftName: shift.name
+      };
       dateSet.add(date);
     });
-
     // Get all shift signups for these shifts
     const shiftIds = shifts.map((s: any) => s.id);
     const signups = await prisma.shiftSignup.findMany({
       where: { shiftId: { in: shiftIds } },
       select: { shiftId: true, mealsServed: true }
     });
-
-    // Build a map: date -> { categoryName -> totalMeals }
-    const dateCategoryMeals: Record<string, Record<string, number>> = {};
+    // Build a map: category -> shiftName -> totalMeals
+    const categoryShiftMeals: Record<string, Record<string, number>> = {};
     signups.forEach((signup: any) => {
-      const shiftId = signup.shiftId;
-      const date = shiftIdToDate[shiftId];
-      const category = shiftIdToCategory[shiftId];
-      if (!date || !category) return;
-      if (!dateCategoryMeals[date]) dateCategoryMeals[date] = {};
-      dateCategoryMeals[date][category] = (dateCategoryMeals[date][category] || 0) + (signup.mealsServed || 0);
+      const info = shiftIdToInfo[signup.shiftId];
+      if (!info) return;
+      const { category, shiftName } = info;
+      if (!category || !shiftName) return;
+      if (!categoryShiftMeals[category]) categoryShiftMeals[category] = {};
+      categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
     });
-
-    // Prepare table data: one row per date, columns are categories
-    const sortedDates = Array.from(dateSet).sort();
-    const categoryNames = categories.map((c: any) => c.name);
-    const tableData = sortedDates.map((date: any) => {
-      const row: Record<string, string | number> = { Date: date };
-      categoryNames.forEach((cat: any) => {
-        row[cat] = dateCategoryMeals[date]?.[cat] || 0;
-      });
-      return row;
+    // Build response: for each category, list shift names and their totals, and category total
+    const result = categories.map((cat: any) => {
+      const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {}).map(([shiftName, total]) => ({ shiftName, total }));
+      const categoryTotal = shiftsInCat.reduce((sum, s) => sum + s.total, 0);
+      return {
+        category: cat.name,
+        shifts: shiftsInCat,
+        total: categoryTotal
+      };
     });
-
     res.json({
-      columns: ['Date', ...categoryNames],
-      tableData
+      data: result
     });
   } catch (err) {
     console.error('Error fetching outgoing stats:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export outgoing stats as Excel for dashboard (category + shift name breakdown)
+app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+    let startDate: Date, endDate: Date;
+    if (!year) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!month || parseInt(month) === 0) {
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
+    // Get all shift categories for this organization
+    const categories = await prisma.shiftCategory.findMany({
+      where: { organizationId },
+      orderBy: { id: 'asc' },
+      select: { id: true, name: true }
+    });
+    // Get all shifts for this organization and date range
+    const shifts = await prisma.shift.findMany({
+      where: {
+        organizationId,
+        startTime: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      orderBy: { startTime: 'asc' },
+      select: { id: true, name: true, shiftCategoryId: true, startTime: true }
+    });
+    // Build a map: shiftId -> { date, categoryName, shiftName }
+    const shiftIdToInfo: Record<number, { date: string, category: string, shiftName: string }> = {};
+    shifts.forEach((shift: any) => {
+      const dt = new Date(shift.startTime);
+      const parts = dt.toLocaleString('en-US', {
+        timeZone: 'America/Halifax',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).split('/');
+      // Add one day to match database data
+      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+      nextDay.setDate(nextDay.getDate() + 1);
+      const date = nextDay.toISOString().split('T')[0];
+      shiftIdToInfo[shift.id] = {
+        date,
+        category: categories.find((c: any) => c.id === shift.shiftCategoryId)?.name || '',
+        shiftName: shift.name
+      };
+    });
+    // Get all shift signups for these shifts
+    const shiftIds = shifts.map((s: any) => s.id);
+    const signups = await prisma.shiftSignup.findMany({
+      where: { shiftId: { in: shiftIds } },
+      select: { shiftId: true, mealsServed: true }
+    });
+    // Build a map: category -> shiftName -> totalMeals
+    const categoryShiftMeals: Record<string, Record<string, number>> = {};
+    signups.forEach((signup: any) => {
+      const info = shiftIdToInfo[signup.shiftId];
+      if (!info) return;
+      const { category, shiftName } = info;
+      if (!category || !shiftName) return;
+      if (!categoryShiftMeals[category]) categoryShiftMeals[category] = {};
+      categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
+    });
+    // Custom unit support
+    let customNoOfMeals = null;
+    let unitLabel = 'Meals';
+    if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+      const weighingCat = await prisma.weighingCategory.findFirst({
+        where: { organizationId, category: unit },
+        select: { noofmeals: true }
+      });
+      if (weighingCat && weighingCat.noofmeals > 0) {
+        customNoOfMeals = weighingCat.noofmeals;
+        unitLabel = `${unit} Units`;
+      }
+    }
+    // Generate Excel file: columns are [Category, Shift Name, Total Meals/Custom Unit]
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Outgoing Stats');
+    worksheet.addRow(['Category', 'Shift Name', `Total ${unitLabel}`]);
+    categories.forEach((cat: any) => {
+      const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {});
+      shiftsInCat.forEach(([shiftName, total]) => {
+        let val = total;
+        if (customNoOfMeals) val = Math.round(val / customNoOfMeals);
+        worksheet.addRow([cat.name, shiftName, val]);
+      });
+      // Add category total row
+      let catTotal = shiftsInCat.reduce((sum, [, total]) => sum + (total as number), 0);
+      if (customNoOfMeals) catTotal = Math.round(catTotal / customNoOfMeals);
+      worksheet.addRow([cat.name, 'Category Total', catTotal]);
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error exporting outgoing stats (dashboard):', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1123,17 +1243,37 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
     items.forEach((item: any) => {
       catIdToWeight[item.categoryId] = (catIdToWeight[item.categoryId] || 0) + item.weightKg;
     });
+    // Custom unit support
+    let customKg = null;
+    let unitLabel = 'kg';
+    if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+      const weighingCat = await prisma.weighingCategory.findFirst({
+        where: { organizationId, category: unit },
+        select: { kilogram_kg_: true }
+      });
+      if (weighingCat && weighingCat.kilogram_kg_ > 0) {
+        customKg = weighingCat.kilogram_kg_;
+        unitLabel = unit;
+      }
+    }
+    // Build result
     const result = categories
       .map((cat: any) => ({ name: cat.name, weight: catIdToWeight[cat.id] || 0 }))
       .filter((c: any) => c.weight > 0);
     // Generate Excel file
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Inventory');
-    worksheet.addRow(['Category', `Weight (${unit === 'Pounds (lb)' ? 'lbs' : 'kg'})`]);
+    worksheet.addRow(['Category', `Weight (${unitLabel})`]);
+    let total = 0;
     result.forEach((row: any) => {
-      const weight = unit === 'Pounds (lb)' ? Math.round(row.weight * 2.20462) : Math.round(row.weight);
+      let weight = row.weight;
+      if (unit === 'Pounds (lb)') weight = Math.round(weight * 2.20462);
+      else if (customKg) weight = Math.round(weight / customKg);
+      else weight = Math.round(weight);
+      total += weight;
       worksheet.addRow([row.name, weight]);
     });
+    worksheet.addRow(['Total', total]);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="inventory-dashboard.xlsx"');
     await workbook.xlsx.write(res);
@@ -1297,6 +1437,9 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
     result.forEach((row: any) => {
       worksheet.addRow([row.name, row.role, row.hours]);
     });
+    // Add total row
+    const totalHours = result.reduce((sum, row) => sum + row.hours, 0);
+    worksheet.addRow(['Total', '', Math.round(totalHours * 100) / 100]);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="volunteer-dashboard-${year}-${month}.xlsx"`);
     await workbook.xlsx.write(res);
@@ -3628,3 +3771,379 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
 });
 
 // Delete organization
+app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    // Check if organization exists
+    const organization = await prisma.organization.findUnique({
+      where: { id: organizationId }
+    });
+
+    if (!organization) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    // Delete related records first
+    await prisma.$transaction([
+      prisma.donation.deleteMany({ where: { organizationId } }),
+      prisma.donationCategory.deleteMany({ where: { organizationId } }),
+      prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+      prisma.recurringShift.deleteMany({ where: { organizationId } }),
+      prisma.shift.deleteMany({ where: { organizationId } }),
+      prisma.shiftCategory.deleteMany({ where: { organizationId } }),
+      prisma.user.deleteMany({ where: { organizationId } })
+    ]);
+
+    // Delete the organization
+    await prisma.organization.delete({
+      where: { id: organizationId }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting organization:', err);
+    res.status(500).json({ error: 'Failed to delete organization' });
+  }
+});
+
+// Get organization statistics
+app.get('/api/organizations/:id/stats', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    // Get counts for different entities
+    const [totalUsers, totalShifts, totalDonations] = await Promise.all([
+      prisma.user.count({ where: { organizationId } }),
+      prisma.shift.count({ where: { organizationId } }),
+      prisma.donation.count({ where: { organizationId } })
+    ]);
+
+    res.json({
+      totalUsers,
+      totalShifts,
+      totalDonations
+    });
+  } catch (err) {
+    console.error('Error fetching organization stats:', err);
+    res.status(500).json({ error: 'Failed to fetch organization statistics' });
+  }
+});
+
+// Update shift signup
+app.put("/api/shiftsignups/:id", authenticateToken, async (req: any, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    try {
+      // Update the shift signup with the new userId
+      const updatedSignup = await prisma.shiftSignup.update({
+        where: { id: Number(id) },
+        data: {
+          userId: Number(userId)
+        }
+      });
+      res.json(updatedSignup);
+    } catch (updateError: any) {
+      console.error("Prisma update error:", updateError);
+      if (updateError.code === 'P2025') {
+        return res.status(404).json({ error: "Shift signup not found" });
+      }
+      throw updateError;
+    }
+  } catch (err) {
+    console.error("Error updating shift signup:", err);
+    res.status(500).json({ error: "Failed to update shift signup" });
+  }
+});
+
+// Delete shift signup
+app.delete('/api/shiftsignups/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const id = parseInt(req.params.id);
+
+    // Check if signup exists and belongs to organization
+    const existing = await prisma.shiftSignup.findFirst({
+      where: { 
+        id,
+        Shift: {
+          organizationId
+        }
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Shift signup not found' });
+    }
+
+    // Delete the shift signup
+    await prisma.shiftSignup.delete({
+      where: { id }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting shift signup:', err);
+    res.status(500).json({ error: 'Failed to delete shift signup' });
+  }
+});
+
+// Get all donors for the authenticated organization
+app.get('/api/donors', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+    res.json(donors);
+  } catch (err) {
+    console.error('Error fetching donors:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export inventory table (donor x category) as Excel
+app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+    // Convert month and year to numbers
+    const monthNum = Number(month);
+    const yearNum = Number(year);
+    let startDate: Date, endDate: Date;
+    if (!yearNum) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!monthNum || monthNum === 0) {
+      startDate = new Date(yearNum, 0, 1);
+      endDate = new Date(yearNum, 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(yearNum, monthNum - 1, 1);
+      endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
+    }
+    // Fetch donors
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+    // Find Walmart donorId
+    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
+    if (walmartDonor) {
+      // Fetch all Donations for Walmart
+      const walmartDonations = await prisma.donation.findMany({
+        where: { donorId: walmartDonor.id, organizationId },
+        select: { id: true, createdAt: true }
+      });
+      console.log('Walmart Donations:', walmartDonations);
+      // Fetch all DonationItems for Walmart Donations
+      const walmartDonationIds = walmartDonations.map(d => d.id);
+      if (walmartDonationIds.length > 0) {
+        const walmartItems = await prisma.donationItem.findMany({
+          where: { donationId: { in: walmartDonationIds } },
+          select: { id: true, donationId: true, categoryId: true, weightKg: true }
+        });
+        console.log('Walmart DonationItems:', walmartItems);
+      } else {
+        console.log('No Walmart Donations found.');
+      }
+    } else {
+      console.log('No Walmart donor found.');
+    }
+    // Fetch categories
+    const categories = await prisma.donationCategory.findMany({
+      where: { organizationId },
+      select: { id: true, name: true }
+    });
+    // Fetch all donation items for this org and date range
+    const items = await prisma.donationItem.findMany({
+      where: {
+        Donation: {
+          organizationId,
+          createdAt: {
+            gte: startDate,
+            lte: endDate
+          }
+        }
+      },
+      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+    });
+    // Debug log: print first 10 items and their donorId
+    console.log('Sample donation items:', items.slice(0, 10).map(i => ({ categoryId: i.categoryId, weightKg: i.weightKg, donorId: i.Donation?.donorId })));
+    // Build donor x category table
+    const donorIdToName: Record<number, string> = {};
+    donors.forEach(d => { donorIdToName[d.id] = d.name; });
+    const catIdToName: Record<number, string> = {};
+    categories.forEach(c => { catIdToName[c.id] = c.name; });
+    // Initialize table: donorName -> categoryName -> 0
+    const table: Record<string, Record<string, number>> = {};
+    donors.forEach(donor => {
+      table[donor.name] = {};
+      categories.forEach(cat => {
+        table[donor.name][cat.name] = 0;
+      });
+    });
+    // Fill table with actual weights
+    items.forEach(item => {
+      const donorName = donorIdToName[Number(item.Donation.donorId)];
+      const catName = catIdToName[Number(item.categoryId)];
+      if (donorName && catName) {
+        table[donorName][catName] += item.weightKg;
+      }
+    });
+    // Prepare Excel data
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Inventory');
+    // Header row
+    const headerRow = ['Donor', ...categories.map(c => c.name), 'Total'];
+    worksheet.addRow(headerRow);
+    // Data rows
+    donors.forEach(donor => {
+      const row: (string | number)[] = [donor.name];
+      let donorTotal = 0;
+      categories.forEach(cat => {
+        let val: number = table[donor.name][cat.name] || 0;
+        if (unit === 'Pounds (lb)') val = +(val * 2.20462).toFixed(2);
+        else val = +val.toFixed(2);
+        row.push(val);
+        donorTotal += val;
+      });
+      row.push(+donorTotal.toFixed(2));
+      worksheet.addRow(row);
+    });
+    // Total row
+    const totalRow: (string | number)[] = ['Total'];
+    let grandTotal: number = 0;
+    categories.forEach(cat => {
+      let catTotal: number = donors.reduce((sum: number, donor) => sum + (unit === 'Pounds (lb)'
+        ? +(table[donor.name][cat.name] * 2.20462)
+        : table[donor.name][cat.name]), 0);
+      catTotal = +(catTotal.toFixed(2));
+      totalRow.push(catTotal);
+      grandTotal += catTotal;
+    });
+    totalRow.push(+grandTotal.toFixed(2));
+    worksheet.addRow(totalRow);
+    // Set response headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory-table-${year}-${month}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error exporting inventory table:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export consolidated incoming stats summary for dashboard as Excel
+app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+
+    // Get incoming dollar value for this organization
+    const org = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { incoming_dollar_value: true }
+    });
+    const incomingDollarValue = org?.incoming_dollar_value || 0;
+
+    // Get all donors for this organization
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      select: { id: true, name: true }
+    });
+
+    // Get all donations for the specified month/year
+    let startDate: Date, endDate: Date;
+    if (parseInt(month) === 0) {
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
+
+    const donations = await prisma.donation.findMany({
+      where: {
+        organizationId,
+        createdAt: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      include: { Donor: true }
+    });
+
+    // Get weighing categories for custom units
+    let weighingCategories: any[] = [];
+    if (unit && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+      weighingCategories = await prisma.weighingCategory.findMany({
+        where: { organizationId },
+      });
+    }
+
+    // Helper to convert weight
+    function convertWeight(weightKg: number): number {
+      if (unit === 'Pounds (lb)') {
+        return +(weightKg * 2.20462).toFixed(2);
+      }
+      if (unit === 'Kilograms (kg)') {
+        return +weightKg.toFixed(2);
+      }
+      // Custom unit
+      const cat = weighingCategories.find(c => c.category === unit);
+      if (cat && cat.kilogram_kg_ > 0) {
+        return +(weightKg / cat.kilogram_kg_).toFixed(2);
+      }
+      return +weightKg.toFixed(2);
+    }
+
+    // Build donor totals
+    const donorTotals: { [donor: string]: { weight: number, value: number } } = {};
+    donors.forEach(donor => { donorTotals[donor.name] = { weight: 0, value: 0 }; });
+    donations.forEach(donation => {
+      const donorName = donation.Donor.name;
+      const weightKg = donation.summary;
+      if (donorTotals[donorName]) {
+        donorTotals[donorName].weight += weightKg;
+        donorTotals[donorName].value += weightKg * incomingDollarValue;
+      }
+    });
+
+    // Prepare Excel data
+    const workbook = new (require('exceljs')).Workbook();
+    const worksheet = workbook.addWorksheet('Incoming Summary');
+    const unitLabel = unit === 'Pounds (lb)' ? 'lbs' : (unit === 'Kilograms (kg)' ? 'kg' : unit);
+    worksheet.addRow(['Donor', `Weight (${unitLabel})`, 'Value ($)']);
+    let grandTotalWeight = 0;
+    let grandTotalValue = 0;
+    donors.forEach(donor => {
+      const w = convertWeight(donorTotals[donor.name].weight);
+      const v = +(donorTotals[donor.name].value).toFixed(2);
+      worksheet.addRow([donor.name, w, v]);
+      grandTotalWeight += w;
+      grandTotalValue += v;
+    });
+    worksheet.addRow(['Grand Total', +grandTotalWeight.toFixed(2), +grandTotalValue.toFixed(2)]);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="incoming-dashboard-${year}-${month}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error exporting dashboard incoming stats:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});

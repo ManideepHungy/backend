@@ -6,6 +6,7 @@ import * as bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import ExcelJS from 'exceljs'
 import nodemailer from 'nodemailer'
+import { upload, uploadToR2, deleteFromR2 } from './services/fileUpload'
 
 dotenv.config()
 
@@ -577,7 +578,7 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
         where: { organizationId, category: unit },
         select: { noofmeals: true }
       });
-      if (weighingCat && weighingCat.noofmeals > 0) {
+      if (weighingCat && weighingCat.noofmeals != null && weighingCat.noofmeals > 0) {
         customNoOfMeals = weighingCat.noofmeals;
         unitLabel = `${unit} Units`;
       }
@@ -1646,11 +1647,39 @@ app.get('/api/users', authenticateToken, async (req, res) => {
         role: true,
         password: true,
         organizationId: true,
-        phone: true
+        phone: true,
+        status: true,
+        createdAt: true,
+        approvedAt: true,
+        deniedAt: true,
+        approvedBy: true,
+        deniedBy: true,
+        denialReason: true
       }
     });
-    res.json(users);
+    
+    // Get approver/denier names separately since relationships don't exist in schema
+    const userIds = [...new Set([...users.map(u => u.approvedBy), ...users.map(u => u.deniedBy)].filter(Boolean))] as number[];
+    const approverUsers = userIds.length > 0 ? await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, firstName: true, lastName: true }
+    }) : [];
+    
+    const approverMap = approverUsers.reduce((map, user) => {
+      map[user.id] = `${user.firstName} ${user.lastName}`;
+      return map;
+    }, {} as Record<number, string>);
+    
+    // Format the response to include approver/denier names
+    const formattedUsers = users.map(user => ({
+      ...user,
+      approvedByName: user.approvedBy ? approverMap[user.approvedBy] : null,
+      deniedByName: user.deniedBy ? approverMap[user.deniedBy] : null
+    }));
+    
+    res.json(formattedUsers);
   } catch (err) {
+    console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
@@ -1807,22 +1836,90 @@ app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    const user = await prisma.user.findUnique({ where: { id: Number(req.params.id) } });
+    const userId = Number(req.params.id);
+    
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.organizationId !== organizationId) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Manually delete related records
-    await prisma.shiftSignup.deleteMany({ where: { userId: user.id } });
-    // Add similar lines for other related tables if needed, e.g.:
-    // await prisma.donation.deleteMany({ where: { userId: user.id } });
+    // Check if this user has approved/denied other users
+    const hasApprovedUsers = await prisma.user.count({
+      where: { 
+        OR: [
+          { approvedBy: userId },
+          { deniedBy: userId }
+        ]
+      }
+    });
 
-    // Now delete the user
-    await prisma.user.delete({ where: { id: Number(req.params.id) } });
+    if (hasApprovedUsers > 0) {
+      // Clear the approvedBy/deniedBy references instead of preventing deletion
+      await prisma.user.updateMany({
+        where: { approvedBy: userId },
+        data: { approvedBy: null }
+      });
+      
+      await prisma.user.updateMany({
+        where: { deniedBy: userId },
+        data: { deniedBy: null }
+      });
+    }
 
-    res.json({ success: true });
+    // Delete related records in the correct order (child tables first)
+    console.log(`Deleting user ${userId} and all related records...`);
+    
+    // 1. Delete donations related to this user's shift signups
+    const userShiftSignups = await prisma.shiftSignup.findMany({
+      where: { userId },
+      select: { id: true }
+    });
+    
+    if (userShiftSignups.length > 0) {
+      const shiftSignupIds = userShiftSignups.map(s => s.id);
+      await prisma.donation.deleteMany({
+        where: { shiftSignupId: { in: shiftSignupIds } }
+      });
+      console.log(`Deleted donations for ${shiftSignupIds.length} shift signups`);
+    }
+
+    // 2. Delete user's shift signups
+    const deletedShiftSignups = await prisma.shiftSignup.deleteMany({ 
+      where: { userId } 
+    });
+    console.log(`Deleted ${deletedShiftSignups.count} shift signups`);
+
+    // 3. Delete user's module permissions
+    const deletedPermissions = await prisma.userModulePermission.deleteMany({ 
+      where: { userId } 
+    });
+    console.log(`Deleted ${deletedPermissions.count} user permissions`);
+
+    // 4. Delete user's agreements
+    const deletedAgreements = await prisma.userAgreement.deleteMany({ 
+      where: { userId } 
+    });
+    console.log(`Deleted ${deletedAgreements.count} user agreements`);
+
+    // 5. Finally delete the user
+    await prisma.user.delete({ where: { id: userId } });
+    console.log(`Successfully deleted user ${userId}`);
+
+    res.json({ 
+      success: true,
+      message: 'User and all related data deleted successfully',
+      deletedRecords: {
+        shiftSignups: deletedShiftSignups.count,
+        permissions: deletedPermissions.count,
+        agreements: deletedAgreements.count
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to delete user' });
+    console.error('Error deleting user:', err);
+    res.status(500).json({ 
+      error: 'Failed to delete user',
+      details: err instanceof Error ? err.message : 'Unknown error'
+    });
   }
 });
 
@@ -1962,6 +2059,377 @@ app.get('/api/organizations', authenticateToken, async (req: any, res) => {
     res.json(organizations);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch organizations' });
+  }
+});
+
+// --- Advanced User Management Endpoints ---
+
+// Get all users with status and approval details
+app.get('/api/users/management', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const users = await prisma.user.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        role: true,
+        status: true,
+        createdAt: true,
+        approvedAt: true,
+        approvedBy: true,
+        deniedAt: true,
+        deniedBy: true,
+        denialReason: true,
+        updatedAt: true
+      },
+      orderBy: [
+        { status: 'asc' }, // PENDING first
+        { createdAt: 'desc' } // newest first
+      ]
+    });
+
+    // Get approver names
+    const approverIds = [...new Set([
+      ...users.map(u => u.approvedBy).filter((id): id is number => id !== null),
+      ...users.map(u => u.deniedBy).filter((id): id is number => id !== null)
+    ])];
+
+    const approvers = await prisma.user.findMany({
+      where: { id: { in: approverIds } },
+      select: { id: true, firstName: true, lastName: true }
+    });
+
+    const approverMap = approvers.reduce((map, user) => {
+      map[user.id] = `${user.firstName} ${user.lastName}`;
+      return map;
+    }, {} as Record<number, string>);
+
+    const formattedUsers = users.map(user => ({
+      ...user,
+      name: `${user.firstName} ${user.lastName}`,
+      approvedByName: user.approvedBy ? approverMap[user.approvedBy] : null,
+      deniedByName: user.deniedBy ? approverMap[user.deniedBy] : null
+    }));
+
+    res.json(formattedUsers);
+  } catch (err) {
+    console.error('Error fetching users for management:', err);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Approve user
+app.put('/api/users/:id/approve', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+    const approverId = req.user.id;
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.status !== 'PENDING') {
+      return res.status(400).json({ error: 'User is not in pending status' });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: 'APPROVED',
+        approvedBy: approverId,
+        approvedAt: new Date(),
+        updatedAt: new Date()
+      }
+    });
+
+    // Create default permissions for approved user
+    const modules = await prisma.module.findMany();
+    const defaultPermissions = modules.map(module => ({
+      userId,
+      organizationId,
+      moduleId: module.id,
+      canAccess: module.name === 'Dashboard' || module.name === 'Profile' // Default access to Dashboard and Profile
+    }));
+
+    await prisma.userModulePermission.createMany({
+      data: defaultPermissions,
+      skipDuplicates: true
+    });
+
+    res.json({
+      ...updatedUser,
+      name: `${updatedUser.firstName} ${updatedUser.lastName}`
+    });
+  } catch (err) {
+    console.error('Error approving user:', err);
+    res.status(500).json({ error: 'Failed to approve user' });
+  }
+});
+
+// Deny user
+app.put('/api/users/:id/deny', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+    const denierId = req.user.id;
+    const { reason } = req.body;
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.status !== 'PENDING') {
+      return res.status(400).json({ error: 'User is not in pending status' });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: 'DENIED',
+        deniedBy: denierId,
+        deniedAt: new Date(),
+        denialReason: reason || 'No reason provided',
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({
+      ...updatedUser,
+      name: `${updatedUser.firstName} ${updatedUser.lastName}`
+    });
+  } catch (err) {
+    console.error('Error denying user:', err);
+    res.status(500).json({ error: 'Failed to deny user' });
+  }
+});
+
+// Reset user status to pending
+app.put('/api/users/:id/reset', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        status: 'PENDING',
+        approvedBy: null,
+        approvedAt: null,
+        deniedBy: null,
+        deniedAt: null,
+        denialReason: null,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json({
+      ...updatedUser,
+      name: `${updatedUser.firstName} ${updatedUser.lastName}`
+    });
+  } catch (err) {
+    console.error('Error resetting user status:', err);
+    res.status(500).json({ error: 'Failed to reset user status' });
+  }
+});
+
+// --- User Permission Management Endpoints ---
+
+// Get all modules
+app.get('/api/modules', authenticateToken, async (req: any, res) => {
+  try {
+    const modules = await prisma.module.findMany({
+      orderBy: { name: 'asc' }
+    });
+    res.json(modules);
+  } catch (err) {
+    console.error('Error fetching modules:', err);
+    res.status(500).json({ error: 'Failed to fetch modules' });
+  }
+});
+
+// Get user permissions
+app.get('/api/users/:id/permissions', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get all modules and user permissions
+    const modules = await prisma.module.findMany({
+      orderBy: { name: 'asc' }
+    });
+
+    const userPermissions = await prisma.userModulePermission.findMany({
+      where: { userId, organizationId },
+      include: { Module: true }
+    });
+
+    const permissionMap = userPermissions.reduce((map, permission) => {
+      map[permission.moduleId] = permission.canAccess;
+      return map;
+    }, {} as Record<number, boolean>);
+
+    const result = modules.map(module => ({
+      moduleId: module.id,
+      moduleName: module.name,
+      moduleDescription: module.description,
+      canAccess: permissionMap[module.id] || false
+    }));
+
+    res.json({
+      userId,
+      userName: `${user.firstName} ${user.lastName}`,
+      userEmail: user.email,
+      userRole: user.role,
+      permissions: result
+    });
+  } catch (err) {
+    console.error('Error fetching user permissions:', err);
+    res.status(500).json({ error: 'Failed to fetch user permissions' });
+  }
+});
+
+// Update user permissions
+app.put('/api/users/:id/permissions', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+    const { permissions } = req.body; // Array of { moduleId, canAccess }
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Validate permissions format
+    if (!Array.isArray(permissions)) {
+      return res.status(400).json({ error: 'Permissions must be an array' });
+    }
+
+    // Delete existing permissions for this user and organization
+    await prisma.userModulePermission.deleteMany({
+      where: { userId, organizationId }
+    });
+
+    // Create new permissions
+    const permissionData = permissions.map(p => ({
+      userId,
+      organizationId,
+      moduleId: p.moduleId,
+      canAccess: p.canAccess
+    }));
+
+    await prisma.userModulePermission.createMany({
+      data: permissionData
+    });
+
+    // Return updated permissions
+    const updatedPermissions = await prisma.userModulePermission.findMany({
+      where: { userId, organizationId },
+      include: { Module: true }
+    });
+
+    const result = updatedPermissions.map(permission => ({
+      moduleId: permission.moduleId,
+      moduleName: permission.Module.name,
+      moduleDescription: permission.Module.description,
+      canAccess: permission.canAccess
+    }));
+
+    res.json({
+      userId,
+      userName: `${user.firstName} ${user.lastName}`,
+      permissions: result
+    });
+  } catch (err) {
+    console.error('Error updating user permissions:', err);
+    res.status(500).json({ error: 'Failed to update user permissions' });
+  }
+});
+
+// Get all users for permission management
+app.get('/api/users/permissions/overview', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    
+    const users = await prisma.user.findMany({
+      where: { 
+        organizationId,
+        status: 'APPROVED' // Only show approved users
+      },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        role: true,
+        status: true,
+        UserModulePermission: {
+          include: { Module: true }
+        }
+      },
+      orderBy: [
+        { role: 'asc' },
+        { firstName: 'asc' }
+      ]
+    });
+
+    const result = users.map(user => {
+      const permissionCount = user.UserModulePermission.filter(p => p.canAccess).length;
+      const totalModules = user.UserModulePermission.length;
+      
+      return {
+        id: user.id,
+        name: `${user.firstName} ${user.lastName}`,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        permissionCount,
+        totalModules,
+        hasPermissions: permissionCount > 0
+      };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Error fetching users permission overview:', err);
+    res.status(500).json({ error: 'Failed to fetch users permission overview' });
   }
 });
 
@@ -3042,11 +3510,6 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-
-// Start server
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`)
-}) 
 
 // Add GET endpoint to fetch shift signups by shiftId
 app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
@@ -4147,3 +4610,257 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// ===== TERMS AND CONDITIONS ENDPOINTS =====
+
+// Get all terms and conditions for an organization
+app.get('/api/terms-and-conditions', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    
+    const termsAndConditions = await prisma.termsAndConditions.findMany({
+      where: { organizationId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        version: true,
+        title: true,
+        fileUrl: true,
+        fileName: true,
+        fileSize: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+        createdBy: true
+      }
+    });
+
+    res.json(termsAndConditions);
+  } catch (err) {
+    console.error('Error fetching terms and conditions:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Upload and create new terms and conditions
+app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = req.user.id;
+    const { version, title, isActive } = req.body;
+    
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    if (!version || !title) {
+      return res.status(400).json({ error: 'Version and title are required' });
+    }
+
+    // Check if version already exists for this organization
+    const existingVersion = await prisma.termsAndConditions.findUnique({
+      where: {
+        organizationId_version: {
+          organizationId,
+          version
+        }
+      }
+    });
+
+    if (existingVersion) {
+      return res.status(400).json({ error: 'Version already exists for this organization' });
+    }
+
+    // Upload file to Cloudflare R2
+    const { fileUrl, fileName, fileSize } = await uploadToR2(req.file, organizationId);
+
+    // If this is set as active, deactivate all other versions
+    if (isActive === 'true' || isActive === true) {
+      await prisma.termsAndConditions.updateMany({
+        where: { organizationId },
+        data: { isActive: false }
+      });
+    }
+
+    // Create new terms and conditions record
+    const newTermsAndConditions = await prisma.termsAndConditions.create({
+      data: {
+        organizationId,
+        version,
+        title,
+        fileUrl,
+        fileName,
+        fileSize,
+        isActive: isActive === 'true' || isActive === true,
+        createdBy: userId,
+        updatedAt: new Date()
+      }
+    });
+
+    res.status(201).json(newTermsAndConditions);
+  } catch (err) {
+    console.error('Error creating terms and conditions:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update terms and conditions (without file upload)
+app.put('/api/terms-and-conditions/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const termsId = parseInt(req.params.id);
+    const { version, title, isActive } = req.body;
+
+    if (!version || !title) {
+      return res.status(400).json({ error: 'Version and title are required' });
+    }
+
+    // Check if the terms and conditions exists and belongs to the organization
+    const existingTerms = await prisma.termsAndConditions.findFirst({
+      where: {
+        id: termsId,
+        organizationId
+      }
+    });
+
+    if (!existingTerms) {
+      return res.status(404).json({ error: 'Terms and conditions not found' });
+    }
+
+    // Check if version already exists for this organization (excluding current record)
+    if (version !== existingTerms.version) {
+      const existingVersion = await prisma.termsAndConditions.findFirst({
+        where: {
+          organizationId,
+          version,
+          id: { not: termsId }
+        }
+      });
+
+      if (existingVersion) {
+        return res.status(400).json({ error: 'Version already exists for this organization' });
+      }
+    }
+
+    // If this is set as active, deactivate all other versions
+    if (isActive === 'true' || isActive === true) {
+      await prisma.termsAndConditions.updateMany({
+        where: { 
+          organizationId,
+          id: { not: termsId }
+        },
+        data: { isActive: false }
+      });
+    }
+
+    // Update the terms and conditions
+    const updatedTerms = await prisma.termsAndConditions.update({
+      where: { id: termsId },
+      data: {
+        version,
+        title,
+        isActive: isActive === 'true' || isActive === true,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json(updatedTerms);
+  } catch (err) {
+    console.error('Error updating terms and conditions:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete terms and conditions
+app.delete('/api/terms-and-conditions/:id', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const termsId = parseInt(req.params.id);
+
+    // Check if the terms and conditions exists and belongs to the organization
+    const existingTerms = await prisma.termsAndConditions.findFirst({
+      where: {
+        id: termsId,
+        organizationId
+      }
+    });
+
+    if (!existingTerms) {
+      return res.status(404).json({ error: 'Terms and conditions not found' });
+    }
+
+    // Delete file from Cloudflare R2
+    try {
+      await deleteFromR2(existingTerms.fileUrl);
+    } catch (fileError) {
+      console.error('Error deleting file from R2:', fileError);
+      // Continue with database deletion even if file deletion fails
+    }
+
+    // Delete the terms and conditions record
+    await prisma.termsAndConditions.delete({
+      where: { id: termsId }
+    });
+
+    res.json({ success: true, message: 'Terms and conditions deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting terms and conditions:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Replace file for existing terms and conditions
+app.put('/api/terms-and-conditions/:id/file', authenticateToken, upload.single('file'), async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const termsId = parseInt(req.params.id);
+    
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Check if the terms and conditions exists and belongs to the organization
+    const existingTerms = await prisma.termsAndConditions.findFirst({
+      where: {
+        id: termsId,
+        organizationId
+      }
+    });
+
+    if (!existingTerms) {
+      return res.status(404).json({ error: 'Terms and conditions not found' });
+    }
+
+    // Upload new file to Cloudflare R2
+    const { fileUrl, fileName, fileSize } = await uploadToR2(req.file, organizationId);
+
+    // Delete old file from R2
+    try {
+      await deleteFromR2(existingTerms.fileUrl);
+    } catch (fileError) {
+      console.error('Error deleting old file from R2:', fileError);
+      // Continue with update even if old file deletion fails
+    }
+
+    // Update the terms and conditions with new file info
+    const updatedTerms = await prisma.termsAndConditions.update({
+      where: { id: termsId },
+      data: {
+        fileUrl,
+        fileName,
+        fileSize,
+        updatedAt: new Date()
+      }
+    });
+
+    res.json(updatedTerms);
+  } catch (err) {
+    console.error('Error updating terms and conditions file:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`)
+})

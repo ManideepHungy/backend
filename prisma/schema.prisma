@@ -51,16 +51,17 @@ model Donor {
 }
 
 model Organization {
-  id                    Int                @id @default(autoincrement())
-  name                  String             @unique
+  id                    Int                  @id @default(autoincrement())
+  name                  String               @unique
   address               String?
-  incoming_dollar_value Float?             @default(10)
+  incoming_dollar_value Float?               @default(10)
   Donation              Donation[]
   DonationCategory      DonationCategory[]
   Donor                 Donor[]
   RecurringShift        RecurringShift[]
   Shift                 Shift[]
   ShiftCategory         ShiftCategory[]
+  TermsAndConditions    TermsAndConditions[]
   User                  User[]
   WeighingCategory      WeighingCategory[]
 }
@@ -120,20 +121,28 @@ model ShiftSignup {
 }
 
 model User {
-  id               Int           @id @default(autoincrement())
-  email            String        @unique
-  phone            String?       @unique
-  password         String
-  firstName        String
-  lastName         String
-  createdAt        DateTime      @default(now())
-  organizationId   Int
-  role             UserRole      @default(VOLUNTEER)
-  resetToken       String?
-  resetTokenExpiry DateTime?
-  updatedAt        DateTime
-  ShiftSignup      ShiftSignup[]
-  Organization     Organization  @relation(fields: [organizationId], references: [id])
+  id                   Int                    @id @default(autoincrement())
+  email                String                 @unique
+  phone                String?                @unique
+  password             String
+  firstName            String
+  lastName             String
+  createdAt            DateTime               @default(now())
+  organizationId       Int
+  role                 UserRole               @default(VOLUNTEER)
+  status               UserStatus             @default(PENDING)
+  approvedBy           Int?
+  approvedAt           DateTime?
+  deniedBy             Int?
+  deniedAt             DateTime?
+  denialReason         String?
+  resetToken           String?
+  resetTokenExpiry     DateTime?
+  updatedAt            DateTime
+  ShiftSignup          ShiftSignup[]
+  Organization         Organization           @relation(fields: [organizationId], references: [id])
+  UserAgreement        UserAgreement[]
+  UserModulePermission UserModulePermission[]
 }
 
 model WeighingCategory {
@@ -142,14 +151,73 @@ model WeighingCategory {
   kilogram_kg_   Float        @map("kilogram(kg)")
   pound_lb_      Float        @map("pound(lb)")
   category       String
-  noofmeals      Int          @default(0)
+  noofmeals      Int?         @default(0)
   Organization   Organization @relation(fields: [organizationId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([category, organizationId])
+}
+
+model Module {
+  id                   Int                    @id @default(autoincrement())
+  name                 String                 @unique
+  description          String?
+  UserModulePermission UserModulePermission[]
+}
+
+model TermsAndConditions {
+  id             Int             @id @default(autoincrement())
+  organizationId Int
+  version        String
+  title          String
+  fileUrl        String
+  fileName       String
+  fileSize       Int
+  isActive       Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime
+  createdBy      Int?
+  Organization   Organization    @relation(fields: [organizationId], references: [id])
+  UserAgreement  UserAgreement[]
+
+  @@unique([organizationId, version])
+}
+
+model UserAgreement {
+  id                   Int                @id @default(autoincrement())
+  userId               Int
+  organizationId       Int
+  termsAndConditionsId Int
+  signature            String
+  signedDocumentUrl    String?
+  acceptedAt           DateTime           @default(now())
+  ipAddress            String?
+  userAgent            String?
+  TermsAndConditions   TermsAndConditions @relation(fields: [termsAndConditionsId], references: [id])
+  User                 User               @relation(fields: [userId], references: [id])
+
+  @@unique([userId, organizationId, termsAndConditionsId])
+}
+
+model UserModulePermission {
+  id             Int     @id @default(autoincrement())
+  userId         Int
+  organizationId Int
+  moduleId       Int
+  canAccess      Boolean @default(false)
+  Module         Module  @relation(fields: [moduleId], references: [id])
+  User           User    @relation(fields: [userId], references: [id])
+
+  @@unique([userId, organizationId, moduleId])
 }
 
 enum UserRole {
   VOLUNTEER
   STAFF
   ADMIN
+}
+
+enum UserStatus {
+  PENDING
+  APPROVED
+  DENIED
 }

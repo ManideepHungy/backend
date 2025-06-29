@@ -570,34 +570,45 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
       if (!categoryShiftMeals[category]) categoryShiftMeals[category] = {};
       categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
     });
-    // Custom unit support
-    let customNoOfMeals = null;
-    let unitLabel = 'Meals';
+    // Custom unit support - use weight ratios instead of noofmeals
+    let customWeightRatio = null;
+    let unitLabel = 'kg';
     if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
       const weighingCat = await prisma.weighingCategory.findFirst({
         where: { organizationId, category: unit },
-        select: { noofmeals: true }
+        select: { kilogram_kg_: true, category: true }
       });
-      if (weighingCat && weighingCat.noofmeals != null && weighingCat.noofmeals > 0) {
-        customNoOfMeals = weighingCat.noofmeals;
-        unitLabel = `${unit} Units`;
+      if (weighingCat && weighingCat.kilogram_kg_ > 0) {
+        customWeightRatio = weighingCat.kilogram_kg_;
+        unitLabel = unit;
       }
+    } else if (unit === 'lb' || unit === 'Pounds (lb)') {
+      customWeightRatio = 1 / 2.20462; // Convert kg to lb
+      unitLabel = 'lb';
     }
-    // Generate Excel file: columns are [Category, Shift Name, Total Meals/Custom Unit]
+    // Generate Excel file: columns are [Category, Shift Name, Total Weight in Selected Unit]
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Outgoing Stats');
-    worksheet.addRow(['Category', 'Shift Name', `Total ${unitLabel}`]);
+    worksheet.addRow(['Category', 'Shift Name', `Total Weight (${unitLabel})`]);
     categories.forEach((cat: any) => {
       const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {});
       shiftsInCat.forEach(([shiftName, total]) => {
-        let val = total;
-        if (customNoOfMeals) val = Math.round(val / customNoOfMeals);
-        worksheet.addRow([cat.name, shiftName, val]);
+        let val = total; // total is already in kg
+        if (customWeightRatio) {
+          val = total / customWeightRatio; // Convert kg to custom unit
+        } else if (unitLabel === 'lb') {
+          val = total * 2.20462; // Convert kg to lb
+        }
+        worksheet.addRow([cat.name, shiftName, Math.round(val * 100) / 100]);
       });
       // Add category total row
       let catTotal = shiftsInCat.reduce((sum, [, total]) => sum + (total as number), 0);
-      if (customNoOfMeals) catTotal = Math.round(catTotal / customNoOfMeals);
-      worksheet.addRow([cat.name, 'Category Total', catTotal]);
+      if (customWeightRatio) {
+        catTotal = catTotal / customWeightRatio;
+      } else if (unitLabel === 'lb') {
+        catTotal = catTotal * 2.20462;
+      }
+      worksheet.addRow([cat.name, 'Category Total', Math.round(catTotal * 100) / 100]);
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
@@ -1526,7 +1537,7 @@ app.get('/api/dashboard-summary', authenticateToken, async (req: any, res) => {
     };
 
     const outgoingStats = {
-      totalMeals: shifts.reduce((sum: number, shift: any) => 
+      totalWeight: shifts.reduce((sum: number, shift: any) => 
         sum + shift.ShiftSignup.reduce((s: number, signup: any) => s + (signup.mealsServed || 0), 0), 0),
       totalShifts: shifts.length
     };
@@ -3871,8 +3882,7 @@ app.get('/api/weighing-categories', authenticateToken, async (req: any, res) => 
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       }
     });
     res.json(categories);
@@ -3886,7 +3896,7 @@ app.get('/api/weighing-categories', authenticateToken, async (req: any, res) => 
 app.post('/api/weighing-categories', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { category, weight, unit, noofmeals } = req.body;
+    const { category, weight, unit } = req.body;
 
     if (!category) {
       return res.status(400).json({ error: 'Category name is required' });
@@ -3930,15 +3940,13 @@ app.post('/api/weighing-categories', authenticateToken, async (req: any, res) =>
         category,
         kilogram_kg_: finalKilogram,
         pound_lb_: finalPound,
-        noofmeals: noofmeals || 0,
         organizationId
       },
       select: {
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       }
     });
 
@@ -3959,8 +3967,7 @@ app.get('/api/weighing', authenticateToken, async (req: any, res) => {
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       },
       orderBy: {
         id: 'desc'
@@ -3977,7 +3984,7 @@ app.get('/api/weighing', authenticateToken, async (req: any, res) => {
 app.post('/api/weighing', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { category, weight, unit, noofmeals } = req.body;
+    const { category, weight, unit } = req.body;
 
     if (!category || !weight || weight <= 0) {
       return res.status(400).json({ error: 'Category and valid weight value are required' });
@@ -4008,15 +4015,13 @@ app.post('/api/weighing', authenticateToken, async (req: any, res) => {
         category,
         kilogram_kg_: finalKilogram,
         pound_lb_: finalPound,
-        noofmeals: noofmeals || 0,
         organizationId
       },
       select: {
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       }
     });
 
@@ -4032,7 +4037,7 @@ app.put('/api/weighing/:id', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
     const weighingId = parseInt(req.params.id);
-    const { category, weight, unit, noofmeals } = req.body;
+    const { category, weight, unit } = req.body;
 
     if (!category || !weight || weight <= 0) {
       return res.status(400).json({ error: 'Category and valid weight value are required' });
@@ -4072,15 +4077,13 @@ app.put('/api/weighing/:id', authenticateToken, async (req: any, res) => {
       data: {
         category,
         kilogram_kg_: finalKilogram,
-        pound_lb_: finalPound,
-        noofmeals: noofmeals || 0
+        pound_lb_: finalPound
       },
       select: {
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       }
     });
 
@@ -4132,8 +4135,7 @@ app.get('/api/weighing/stats', authenticateToken, async (req: any, res) => {
         id: true,
         category: true,
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       },
       orderBy: {
         id: 'desc'
@@ -4147,8 +4149,7 @@ app.get('/api/weighing/stats', authenticateToken, async (req: any, res) => {
       where: { organizationId },
       _sum: {
         kilogram_kg_: true,
-        pound_lb_: true,
-        noofmeals: true
+        pound_lb_: true
       }
     });
 
@@ -4157,7 +4158,7 @@ app.get('/api/weighing/stats', authenticateToken, async (req: any, res) => {
         categoryName: total.category,
         totalKilogram: total._sum.kilogram_kg_ || 0,
         totalPound: total._sum.pound_lb_ || 0,
-        totalMeals: total._sum.noofmeals || 0
+        totalWeight: (total._sum.kilogram_kg_ || 0)
       };
     });
 

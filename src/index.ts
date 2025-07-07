@@ -6,7 +6,7 @@ import * as bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import ExcelJS from 'exceljs'
 import nodemailer from 'nodemailer'
-import { upload, uploadToR2, deleteFromR2 } from './services/fileUpload'
+import { upload, uploadToR2, deleteFromR2, generateSignedUrl } from './services/fileUpload'
 
 dotenv.config()
 
@@ -272,6 +272,17 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       select: { id: true, name: true }
     });
 
+    // Get weighing categories for custom unit conversion
+    const weighingCategories = await prisma.weighingCategory.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        category: true,
+        kilogram_kg_: true,
+        pound_lb_: true
+      }
+    });
+
     // Get all donations for the specified month/year
     let startDate: Date, endDate: Date;
     if (parseInt(month) === 0) {
@@ -343,41 +354,135 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
     // Calculate grand total
     const grandTotal = Object.values(totals).reduce((sum: number, val: any) => sum + val, 0);
 
+    // Helper function to convert weight based on selected unit
+    const convertWeight = (weight: number) => {
+      if (weight == null || isNaN(weight)) return 0;
+      
+      // Handle base units
+      if (unit === 'Pounds (lb)') {
+        return +(weight * 2.20462).toFixed(2);
+      }
+      if (unit === 'Kilograms (kg)') {
+        return +weight.toFixed(2);
+      }
+      
+      // Handle custom weighing categories
+      const category = weighingCategories.find(c => c.category === unit);
+      if (category && category.kilogram_kg_ > 0) {
+        // Convert kg to custom unit (divide by kg per unit)
+        return +(weight / category.kilogram_kg_).toFixed(2);
+      }
+      
+      return +weight.toFixed(2);
+    };
+
+    // Helper function to format date for Excel (matches frontend display)
+    const formatDateForExcel = (dateStr: string) => {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    };
+
+    // Helper function to get unit label for display
+    const getUnitLabel = () => {
+      if (unit === 'Kilograms (kg)') return 'kg';
+      if (unit === 'Pounds (lb)') return 'lbs';
+      return unit;
+    };
+
     // Create Excel workbook
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Incoming Stats');
 
-    // Header row
-    const headerRow = ['Date', ...donors.map((d: any) => d.name), 'Total'];
+    // Check if we need to aggregate by month (All Months view)
+    if (parseInt(month) === 0) {
+      // Monthly aggregated view
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                         'July', 'August', 'September', 'October', 'November', 'December'];
+      
+      // Initialize all months
+      const monthMap: { [month: number]: any } = {};
+      for (let m = 1; m <= 12; m++) {
+        monthMap[m] = { Month: monthNames[m - 1] };
+        donors.forEach(donor => {
+          monthMap[m][donor.name] = 0;
+        });
+        monthMap[m]['Total'] = 0;
+      }
+
+      // Aggregate data by month
+      tableData.forEach(row => {
+        const d = new Date(row.date as string);
+        if (isNaN(d.getTime())) return;
+        const m = d.getMonth() + 1;
+        let rowTotal = 0;
+        donors.forEach(donor => {
+          if (typeof row[donor.name] === 'number') {
+            const value = Number(row[donor.name]);
+            monthMap[m][donor.name] += value;
+            rowTotal += value;
+          }
+        });
+        monthMap[m]['Total'] += rowTotal;
+      });
+
+      // Build display data for all months
+      const displayData = Object.values(monthMap);
+      const columns = ['Month', ...donors.map(d => d.name), 'Total'];
+
+      // Header row with unit labels
+      const headerRow = columns.map(col => {
+        if (col === 'Month' || col === 'Total') return col;
+        return `${col} (${getUnitLabel()})`;
+      });
     worksheet.addRow(headerRow);
 
     // Data rows
-    tableData.forEach((row: any, i: number) => {
+      displayData.forEach((row: any) => {
       const rowArr = [
-        row.date,
-        ...donors.map((d: any) => row[d.name] || 0),
-        rowTotals[i]
+          row.Month,
+          ...donors.map(d => convertWeight(row[d.name] || 0)),
+          convertWeight(row.Total || 0)
       ];
       worksheet.addRow(rowArr);
     });
 
-    // Totals row
-    const totalsRow = ['Monthly Total', ...donors.map((d: any) => totals[d.name]), grandTotal];
-    worksheet.addRow(totalsRow);
+      // Yearly totals row
+      const yearlyTotalsRow = [
+        'Yearly Total',
+        ...donors.map(d => convertWeight(totals[d.name] || 0)),
+        convertWeight(grandTotal)
+      ];
+      worksheet.addRow(yearlyTotalsRow);
 
-    // Unit conversion if needed
-    if (unit === 'Pounds (lb)') {
-      // Convert all weight columns to lbs
-      worksheet.eachRow((row: any, rowNumber: any) => {
-        if (rowNumber === 1) return; // skip header
-        row.eachCell((cell: any, colNumber: any) => {
-          if (colNumber > 1) {
-            if (typeof cell.value === 'number') {
-              cell.value = +(cell.value * 2.20462).toFixed(2);
-            }
-          }
-        });
+    } else {
+      // Daily view for specific month
+      const columns = ['Date', ...donors.map(d => d.name), 'Total'];
+
+      // Header row with unit labels
+      const headerRow = columns.map(col => {
+        if (col === 'Date' || col === 'Total') return col;
+        return `${col} (${getUnitLabel()})`;
       });
+      worksheet.addRow(headerRow);
+
+      // Data rows
+      tableData.forEach((row: any, i: number) => {
+        const rowArr = [
+          formatDateForExcel(row.date),
+          ...donors.map(d => convertWeight(row[d.name] || 0)),
+          convertWeight(rowTotals[i])
+        ];
+        worksheet.addRow(rowArr);
+      });
+
+      // Monthly totals row
+      const monthlyTotalsRow = [
+        'Monthly Total',
+        ...donors.map(d => convertWeight(totals[d.name] || 0)),
+        convertWeight(grandTotal)
+      ];
+      worksheet.addRow(monthlyTotalsRow);
     }
 
     // Set response headers
@@ -728,8 +833,19 @@ app.get('/api/outgoing-stats/filtered', authenticateToken, async (req: any, res)
 // Export filtered outgoing stats as Excel
 app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: any, res) => {
   try {
-    const { month, year } = req.query;
+    const { month, year, unit } = req.query;
     const organizationId = req.user.organizationId;
+
+    // Get weighing categories for custom unit conversion
+    const weighingCategories = await prisma.weighingCategory.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        category: true,
+        kilogram_kg_: true,
+        pound_lb_: true
+      }
+    });
 
     // Get date range based on month/year
     let startDate: Date, endDate: Date;
@@ -808,10 +924,13 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: an
     // Prepare table data: one row per date, columns are categories
     const sortedDates = Array.from(dateSet).sort();
     const categoryNames = categories.map((c: any) => c.name);
+    // Filter out 'Collections' category from display (matches frontend logic)
+    const filteredCategoryNames = categoryNames.filter(name => name !== 'Collections');
+    
     const tableData = sortedDates.map((date: any) => {
       const row: Record<string, string | number> = { Date: date };
       let total = 0;
-      categoryNames.forEach((cat: string) => {
+      filteredCategoryNames.forEach((cat: string) => {
         const val = dateCategoryMeals[date]?.[cat] || 0;
         row[cat] = val;
         total += val;
@@ -820,17 +939,115 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: an
       return row;
     });
 
-    // Generate Excel file
+    // Calculate totals for each category
+    const totals: Record<string, number> = {};
+    let grandTotal = 0;
+    filteredCategoryNames.forEach(cat => {
+      totals[cat] = tableData.reduce((sum, row) => sum + (Number(row[cat]) || 0), 0);
+      grandTotal += totals[cat];
+    });
+
+    // Helper function to convert weight based on selected unit
+    const convertWeight = (value: number) => {
+      if (value == null || isNaN(value)) return 0;
+      
+      // Handle base units
+      if (unit === 'kg') {
+        return +value.toFixed(2);
+      }
+      if (unit === 'lb') {
+        return +(value * 2.20462).toFixed(2);
+      }
+      
+      // Handle custom weighing categories
+      const category = weighingCategories.find(c => c.category === unit);
+      if (category && category.kilogram_kg_ > 0) {
+        // Convert kg to custom unit (divide by kg per unit)
+        return +(value / category.kilogram_kg_).toFixed(2);
+      }
+      
+      return +value.toFixed(2);
+    };
+
+    // Helper function to format date for Excel (matches frontend display)
+    const formatDateForExcel = (dateStr: string) => {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    };
+
+    // Helper function to get unit label for display
+    const getUnitLabel = () => {
+      if (unit === 'kg') return 'kg';
+      if (unit === 'lb') return 'lb';
+      return unit;
+    };
+
+    // Create Excel workbook
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Outgoing Stats');
-    worksheet.addRow(['Date', ...categoryNames, 'Total']);
+
+    // Check if we need to aggregate by month (All Months view)
+    if (parseInt(month) === 0) {
+      // Monthly aggregated view
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                         'July', 'August', 'September', 'October', 'November', 'December'];
+      
+      // Initialize all months
+      const monthMap: { [month: number]: any } = {};
+      for (let m = 1; m <= 12; m++) {
+        monthMap[m] = { Month: monthNames[m - 1] };
+        filteredCategoryNames.forEach(cat => {
+          monthMap[m][cat] = 0;
+        });
+        monthMap[m]['Total'] = 0;
+      }
+
+      // Aggregate data by month
+      tableData.forEach(row => {
+        const d = new Date(row.Date as string);
+        if (isNaN(d.getTime())) return;
+        const m = d.getMonth() + 1;
+        let rowTotal = 0;
+        filteredCategoryNames.forEach(cat => {
+          if (typeof row[cat] === 'number') {
+            const value = Number(row[cat]);
+            monthMap[m][cat] += value;
+            rowTotal += value;
+          }
+        });
+        monthMap[m]['Total'] += rowTotal;
+      });
+
+      // Build display data for all months
+      const displayData = Object.values(monthMap);
+      const columns = ['Month', ...filteredCategoryNames, 'Total'];
+
+      // Header row with unit labels
+      const headerRow = columns.map(col => {
+        if (col === 'Month' || col === 'Total') return col;
+        return `${col} (${getUnitLabel()})`;
+      });
+      worksheet.addRow(headerRow);
+
+      // Data rows
     tableData.forEach((row: any) => {
-      worksheet.addRow([
-        row['Date'],
-        ...categoryNames.map((cat: string) => row[cat] || 0),
-        row['Total']
-      ]);
-    });
+        const rowArr = [
+          formatDateForExcel(row.Date as string),
+          ...filteredCategoryNames.map(cat => convertWeight(row[cat] || 0)),
+          convertWeight(row.Total || 0)
+        ];
+        worksheet.addRow(rowArr);
+      });
+
+      // Monthly totals row
+      const monthlyTotalsRow = [
+        'Monthly Total',
+        ...filteredCategoryNames.map(cat => convertWeight(totals[cat] || 0)),
+        convertWeight(grandTotal)
+      ];
+      worksheet.addRow(monthlyTotalsRow);
+    }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="outgoing-stats-${year}-${month}.xlsx"`);
@@ -1061,7 +1278,68 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
         dateCategoryHours[date][category] = (dateCategoryHours[date][category] || 0) + totalCatHours;
       }
     }
-    // Prepare table data: one row per date, columns are categories
+    // Check if we need to aggregate by month (when month=0, "All Months")
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Volunteer Hours');
+    
+    if (!month || parseInt(month) === 0) {
+      // Aggregate by month (same logic as frontend)
+      const monthMap: Record<number, any> = {};
+      const monthNames = [
+        '', 'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+      ];
+      
+      // Initialize all months
+      for (let m = 1; m <= 12; m++) {
+        monthMap[m] = { Month: monthNames[m] };
+        categoryNames.forEach((cat: string) => {
+          monthMap[m][cat] = 0;
+        });
+      }
+
+      // Aggregate daily data by month
+      Object.keys(dateCategoryHours).forEach(date => {
+        const d = new Date(date);
+        if (isNaN(d.getTime())) return;
+        const m = d.getMonth() + 1;
+        categoryNames.forEach((cat: string) => {
+          const val = dateCategoryHours[date][cat] || 0;
+          monthMap[m][cat] += val;
+        });
+      });
+
+      // Build monthly display data
+      const monthlyData = Object.values(monthMap);
+      
+      // Generate Excel file with monthly aggregation
+      worksheet.addRow(['Month', ...categoryNames, 'Total Hours']);
+      
+      monthlyData.forEach((row: any) => {
+        let total = 0;
+        categoryNames.forEach((cat: string) => {
+          total += (row[cat] || 0);
+        });
+        worksheet.addRow([
+          row['Month'],
+          ...categoryNames.map((cat: string) => Math.round((row[cat] || 0) * 100) / 100),
+          Math.round(total * 100) / 100
+        ]);
+      });
+
+      // Add total row
+      const totalRow: any[] = ['Total Hours'];
+      let grandTotal: number = 0;
+      categoryNames.forEach((cat: string) => {
+        const catTotal: number = monthlyData.reduce((sum: number, row: any) => sum + (Number(row[cat]) || 0), 0);
+        totalRow.push(Math.round(catTotal * 100) / 100);
+        grandTotal += catTotal;
+      });
+      totalRow.push(Math.round(grandTotal * 100) / 100);
+      worksheet.addRow(totalRow);
+      
+    } else {
+      // Daily view (specific month selected)
     const sortedDates = Object.keys(dateCategoryHours).sort();
     const tableData = sortedDates.map(date => {
       const row: Record<string, string | number> = { Date: date };
@@ -1074,17 +1352,35 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
       row['Total Hours'] = Math.round(total * 100) / 100;
       return row;
     });
-    // Generate Excel file
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Volunteer Hours');
+
+      // Helper function to format date for Excel (to match frontend display)
+      const formatDateForExcel = (dateStr: string) => {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+      };
+
+      // Generate Excel file with daily data
     worksheet.addRow(['Date', ...categoryNames, 'Total Hours']);
     tableData.forEach((row: any) => {
       worksheet.addRow([
-        row['Date'],
+        formatDateForExcel(row['Date']),
         ...categoryNames.map((cat: string) => row[cat] || 0),
         row['Total Hours']
       ]);
     });
+
+      // Add total row
+      const totalRow: any[] = ['Total Hours'];
+      let grandTotal: number = 0;
+      categoryNames.forEach((cat: string) => {
+        const catTotal: number = tableData.reduce((sum: number, row: any) => sum + (typeof row[cat] === 'number' ? Number(row[cat]) : 0), 0);
+        totalRow.push(Math.round(catTotal * 100) / 100);
+        grandTotal += catTotal;
+      });
+      totalRow.push(Math.round(grandTotal * 100) / 100);
+      worksheet.addRow(totalRow);
+    }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="volunteer-hours-${year}-${month}.xlsx"`);
     await workbook.xlsx.write(res);
@@ -1458,6 +1754,173 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
     res.end();
   } catch (err) {
     console.error('Error exporting volunteer summary (dashboard):', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export dashboard summary as Excel
+app.get('/api/dashboard-summary/export', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+
+    // Get date range based on month/year
+    let startDate: Date, endDate: Date;
+    if (!year) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+    if (!month || parseInt(month) === 0) {
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
+
+    // Use the same logic as outgoing-stats to get the data that matches the frontend
+    const categories = await prisma.shiftCategory.findMany({
+      where: { organizationId },
+      orderBy: { id: 'asc' },
+      select: { id: true, name: true }
+    });
+
+    const shifts = await prisma.shift.findMany({
+      where: {
+        organizationId,
+        startTime: {
+          gte: startDate,
+          lte: endDate
+        }
+      },
+      orderBy: { startTime: 'asc' },
+      select: { id: true, name: true, shiftCategoryId: true, startTime: true }
+    });
+
+    // Build shift info map
+    const shiftIdToInfo: Record<number, { date: string, category: string, shiftName: string }> = {};
+    const categoryIdToName: Record<number, string> = {};
+    categories.forEach((cat: any) => { categoryIdToName[cat.id] = cat.name; });
+
+    const dateSet = new Set<string>();
+    shifts.forEach((shift: any) => {
+      const date = shift.startTime.toISOString().split('T')[0];
+      const categoryName = categoryIdToName[shift.shiftCategoryId] || 'Unknown';
+      const shiftName = shift.name || 'Unnamed Shift';
+      shiftIdToInfo[shift.id] = { date, category: categoryName, shiftName };
+      dateSet.add(date);
+    });
+
+    // Get all shift signups for these shifts (same as outgoing stats endpoint)
+    const shiftIds = shifts.map((s: any) => s.id);
+    const signups = await prisma.shiftSignup.findMany({
+      where: { shiftId: { in: shiftIds } },
+      select: { shiftId: true, mealsServed: true }
+    });
+
+    // Build a map: category -> shiftName -> totalMeals (same as outgoing stats)
+    const categoryShiftMeals: Record<string, Record<string, number>> = {};
+    signups.forEach((signup: any) => {
+      const info = shiftIdToInfo[signup.shiftId];
+      if (!info) return;
+      const { category, shiftName } = info;
+      if (!category || !shiftName) return;
+      if (!categoryShiftMeals[category]) categoryShiftMeals[category] = {};
+      categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
+    });
+
+    // Build response data (same format as outgoing stats)
+    const categoryData = categories.map((cat: any) => {
+      const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {}).map(([shiftName, total]) => ({ shiftName, total }));
+      const categoryTotal = shiftsInCat.reduce((sum, s) => sum + s.total, 0);
+      return {
+        category: cat.name,
+        shifts: shiftsInCat,
+        total: categoryTotal
+      };
+    });
+
+    // Use the categoryData directly (it's already in the correct format)
+    const outTable = categoryData;
+
+    // Calculate category totals with unit conversion (matching frontend logic)
+    const categoryTotals: Record<string, number> = {};
+    let totalWeightKg = 0;
+
+    // Custom unit support
+    let customWeightRatio: number | null = null;
+    let unitLabel: string = 'kg';
+    if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+      const weighingCat = await prisma.weighingCategory.findFirst({
+        where: { organizationId, category: unit },
+        select: { kilogram_kg_: true }
+      });
+      if (weighingCat && weighingCat.kilogram_kg_ && weighingCat.kilogram_kg_ > 0) {
+        customWeightRatio = weighingCat.kilogram_kg_;
+        unitLabel = unit as string;
+      }
+    } else if (unit === 'lb' || unit === 'Pounds (lb)') {
+      unitLabel = 'lb';
+    }
+
+    // Convert weight function (matching frontend convertWeightForCategory)
+    const convertWeightForCategory = (rawWeight: number): number => {
+      if (unit === 'lb' || unit === 'Pounds (lb)') {
+        return rawWeight * 2.20462; // kg to lb
+      } else if (customWeightRatio !== null) {
+        return rawWeight / customWeightRatio; // kg to custom unit
+      }
+      return rawWeight; // kg (default)
+    };
+
+    // Calculate totals (matching frontend logic)
+    outTable.forEach((cat: any) => {
+      totalWeightKg += cat.total; // Keep raw values in kg
+      categoryTotals[cat.category] = convertWeightForCategory(cat.total); // Converted values for display
+    });
+
+    const totalDistributed = Object.values(categoryTotals).reduce((sum, val) => sum + val, 0);
+    const equivalentValue = totalWeightKg * 10; // $10 per kg equivalent (matching frontend)
+
+    // Generate Excel file
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Dashboard Summary');
+
+    // Add headers
+    worksheet.addRow(['Category', `Total Weight (${unitLabel})`]);
+
+    // Add category data (exactly as shown in frontend Summary section)
+    Object.entries(categoryTotals).forEach(([category, total]) => {
+      worksheet.addRow([category, Math.round(total * 100) / 100]);
+    });
+
+    // Add total distributed row (matching frontend display)
+    worksheet.addRow(['TOTAL DISTRIBUTED', Math.round(totalDistributed * 100) / 100]);
+
+    // Add equivalent value row (matching frontend display)
+    worksheet.addRow(['EQUIVALENT VALUE ($)', equivalentValue.toLocaleString()]);
+
+    // Style the worksheet (no colors, only bold text)
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true };
+
+    const totalRow = worksheet.getRow(worksheet.rowCount - 1);
+    totalRow.font = { bold: true };
+
+    const valueRow = worksheet.getRow(worksheet.rowCount);
+    valueRow.font = { bold: true };
+
+    // Auto-fit columns
+    worksheet.columns.forEach((column: any) => {
+      column.width = 20;
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="dashboard-summary-${year}-${month}.xlsx"`);
+    
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Error exporting dashboard summary:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1934,12 +2397,62 @@ app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Upload user agreement document
+app.post('/api/users/upload-agreement', authenticateToken, upload.single('agreement'), async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = req.user.id;
+    
+    console.log('Upload agreement request received:', {
+      organizationId,
+      userId,
+      hasFile: !!req.file
+    });
+    
+    if (!req.file) {
+      console.log('No file uploaded in request');
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    console.log('File details:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
+    // Upload to R2 useragreements folder
+    console.log('Attempting to upload to useragreements folder...');
+    const result = await uploadToR2(req.file, organizationId, 'useragreements');
+    
+    console.log('Upload successful:', result);
+    
+    res.json({
+      success: true,
+      fileUrl: result.fileUrl,
+      fileName: result.fileName,
+      fileSize: result.fileSize
+    });
+  } catch (error) {
+    console.error('Error uploading user agreement:', error);
+    console.error('Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+      code: (error as any)?.code,
+      statusCode: (error as any)?.statusCode
+    });
+    res.status(500).json({ 
+      error: 'Failed to upload agreement document',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 // Add user
 app.post('/api/users', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    const { firstName, lastName, email, phone, password, role } = req.body;
+    const { firstName, lastName, email, phone, password, role, agreementFileUrl, agreementFileName, agreementFileSize } = req.body;
 
     // Log the incoming request data
     console.log('Adding user with data:', {
@@ -1948,7 +2461,8 @@ app.post('/api/users', authenticateToken, async (req, res) => {
       email,
       phone,
       role,
-      organizationId
+      organizationId,
+      hasAgreement: !!agreementFileUrl
     });
 
     // Validate required fields
@@ -1971,6 +2485,13 @@ app.post('/api/users', authenticateToken, async (req, res) => {
           password: !password,
           role: !role
         }
+      });
+    }
+
+    // Validate agreement upload
+    if (!agreementFileUrl) {
+      return res.status(400).json({ 
+        error: 'Terms and conditions agreement document is required'
       });
     }
 
@@ -1997,7 +2518,7 @@ app.post('/api/users', authenticateToken, async (req, res) => {
     // Hash the password before storing
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create user
+    // Create user with APPROVED status (since admin is creating them)
     const user = await prisma.user.create({
       data: {
         firstName,
@@ -2007,16 +2528,68 @@ app.post('/api/users', authenticateToken, async (req, res) => {
         password: hashedPassword,
         role,
         organizationId,
+        status: 'APPROVED', // Set status to APPROVED directly
+        approvedBy: reqAny.user.id, // Track who approved them
+        approvedAt: new Date(), // Set approval timestamp
         updatedAt: new Date()
       }
     });
 
     console.log('User created successfully:', user.id);
 
+    // Create user agreement record if agreement was uploaded
+    if (agreementFileUrl) {
+      try {
+        // Get or create default terms and conditions for the organization
+        let termsAndConditions = await prisma.termsAndConditions.findFirst({
+          where: { 
+            organizationId,
+            isActive: true 
+          }
+        });
+
+        // If no active terms exist, create a default one
+        if (!termsAndConditions) {
+          termsAndConditions = await prisma.termsAndConditions.create({
+            data: {
+              organizationId,
+              version: '1.0',
+              title: 'Default Terms and Conditions',
+              fileUrl: '',
+              fileName: 'Default Terms',
+              fileSize: 0,
+              isActive: true,
+              updatedAt: new Date(),
+              createdBy: reqAny.user.id
+            }
+          });
+        }
+
+        // Create user agreement record
+        await prisma.userAgreement.create({
+          data: {
+            userId: user.id,
+            organizationId,
+            termsAndConditionsId: termsAndConditions.id,
+            signature: `${firstName} ${lastName}`, // Use full name as signature
+            signedDocumentUrl: agreementFileUrl,
+            acceptedAt: new Date(),
+            ipAddress: req.ip || req.connection.remoteAddress || 'Unknown',
+            userAgent: req.get('User-Agent') || 'Unknown'
+          }
+        });
+
+        console.log('User agreement created successfully for user:', user.id);
+      } catch (agreementError) {
+        console.error('Error creating user agreement:', agreementError);
+        // Don't fail the user creation, but log the error
+      }
+    }
+
     // Fetch organization name
     const org = await prisma.organization.findUnique({ where: { id: organizationId } });
 
-    // Send welcome email
+    // Send welcome email with password reset link
     try {
       const transporter = nodemailer.createTransport({
         service: 'gmail',
@@ -2025,12 +2598,54 @@ app.post('/api/users', authenticateToken, async (req, res) => {
           pass: process.env.EMAIL_PASS,
         },
       });
+
+      // Generate password reset token for the new user
+      const resetToken = jwt.sign({ email, type: 'password_reset' }, JWT_SECRET, { expiresIn: '7d' }); // 7 days for new users
+      const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/forgot-password?token=${resetToken}`;
+
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: email,
-        subject: 'Welcome to Hungy!',
-        text: `You have been added to Hungy under organization: ${org?.name || 'Unknown'}.
-\nYour login details:\nUser ID: ${email}\nPassword: ${password}\nRole: ${role}\n\nPlease log in and change your password after first login.`,
+        subject: 'Welcome to Hungy - Account Created!',
+        text: `Welcome to Hungy!
+
+You have been added to Hungy under organization: ${org?.name || 'Unknown'}.
+
+Your login details:
+Email: ${email}
+Password: ${password}
+Role: ${role}
+
+For security, we recommend changing your password after first login.
+You can reset your password using this link: ${resetUrl}
+
+Please log in to get started!`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #ff9800; margin-bottom: 20px;">Welcome to Hungy!</h2>
+            
+            <p>You have been added to Hungy under organization: <strong>${org?.name || 'Unknown'}</strong>.</p>
+            
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+              <h3 style="margin-top: 0; color: #333;">Your Login Details:</h3>
+              <p><strong>Email:</strong> ${email}</p>
+              <p><strong>Password:</strong> ${password}</p>
+              <p><strong>Role:</strong> ${role}</p>
+            </div>
+            
+            <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #2196f3;">
+              <h4 style="margin-top: 0; color: #1976d2;">Security Recommendation</h4>
+              <p>For your security, we recommend changing your password after first login.</p>
+              <p>You can reset your password using the link below:</p>
+              <a href="${resetUrl}" style="display: inline-block; background: #2196f3; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 10px;">Reset Password</a>
+            </div>
+            
+            <p style="margin-top: 30px;">Please log in to get started!</p>
+            
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;">
+            <p style="color: #666; font-size: 12px;">This is an automated message from Hungy.</p>
+          </div>
+        `
       };
       await transporter.sendMail(mailOptions);
       console.log('Welcome email sent successfully to:', email);
@@ -3390,138 +4005,6 @@ app.get('/api/donors', authenticateToken, async (req: any, res) => {
   }
 });
 
-// Export inventory table (donor x category) as Excel
-app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) => {
-  try {
-    const { month, year, unit } = req.query;
-    const organizationId = req.user.organizationId;
-    // Convert month and year to numbers
-    const monthNum = Number(month);
-    const yearNum = Number(year);
-    let startDate: Date, endDate: Date;
-    if (!yearNum) {
-      return res.status(400).json({ error: 'Year is required' });
-    }
-    if (!monthNum || monthNum === 0) {
-      startDate = new Date(yearNum, 0, 1);
-      endDate = new Date(yearNum, 11, 31, 23, 59, 59, 999);
-    } else {
-      startDate = new Date(yearNum, monthNum - 1, 1);
-      endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
-    }
-    // Fetch donors
-    const donors = await prisma.donor.findMany({
-      where: { kitchenId: organizationId },
-      select: { id: true, name: true }
-    });
-    // Find Walmart donorId
-    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
-    if (walmartDonor) {
-      // Fetch all Donations for Walmart
-      const walmartDonations = await prisma.donation.findMany({
-        where: { donorId: walmartDonor.id, organizationId },
-        select: { id: true, createdAt: true }
-      });
-      console.log('Walmart Donations:', walmartDonations);
-      // Fetch all DonationItems for Walmart Donations
-      const walmartDonationIds = walmartDonations.map(d => d.id);
-      if (walmartDonationIds.length > 0) {
-        const walmartItems = await prisma.donationItem.findMany({
-          where: { donationId: { in: walmartDonationIds } },
-          select: { id: true, donationId: true, categoryId: true, weightKg: true }
-        });
-        console.log('Walmart DonationItems:', walmartItems);
-      } else {
-        console.log('No Walmart Donations found.');
-      }
-    } else {
-      console.log('No Walmart donor found.');
-    }
-    // Fetch categories
-    const categories = await prisma.donationCategory.findMany({
-      where: { organizationId },
-      select: { id: true, name: true }
-    });
-    // Fetch all donation items for this org and date range
-    const items = await prisma.donationItem.findMany({
-      where: {
-        Donation: {
-          organizationId,
-          createdAt: {
-            gte: startDate,
-            lte: endDate
-          }
-        }
-      },
-      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
-    });
-    // Debug log: print first 10 items and their donorId
-    console.log('Sample donation items:', items.slice(0, 10).map(i => ({ categoryId: i.categoryId, weightKg: i.weightKg, donorId: i.Donation?.donorId })));
-    // Build donor x category table
-    const donorIdToName: Record<number, string> = {};
-    donors.forEach(d => { donorIdToName[d.id] = d.name; });
-    const catIdToName: Record<number, string> = {};
-    categories.forEach(c => { catIdToName[c.id] = c.name; });
-    // Initialize table: donorName -> categoryName -> 0
-    const table: Record<string, Record<string, number>> = {};
-    donors.forEach(donor => {
-      table[donor.name] = {};
-      categories.forEach(cat => {
-        table[donor.name][cat.name] = 0;
-      });
-    });
-    // Fill table with actual weights
-    items.forEach(item => {
-      const donorName = donorIdToName[Number(item.Donation.donorId)];
-      const catName = catIdToName[Number(item.categoryId)];
-      if (donorName && catName) {
-        table[donorName][catName] += item.weightKg;
-      }
-    });
-    // Prepare Excel data
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Inventory');
-    // Header row
-    const headerRow = ['Donor', ...categories.map(c => c.name), 'Total'];
-    worksheet.addRow(headerRow);
-    // Data rows
-    donors.forEach(donor => {
-      const row: (string | number)[] = [donor.name];
-      let donorTotal = 0;
-      categories.forEach(cat => {
-        let val: number = table[donor.name][cat.name] || 0;
-        if (unit === 'Pounds (lb)') val = +(val * 2.20462).toFixed(2);
-        else val = +val.toFixed(2);
-        row.push(val);
-        donorTotal += val;
-      });
-      row.push(+donorTotal.toFixed(2));
-      worksheet.addRow(row);
-    });
-    // Total row
-    const totalRow: (string | number)[] = ['Total'];
-    let grandTotal: number = 0;
-    categories.forEach(cat => {
-      let catTotal: number = donors.reduce((sum: number, donor) => sum + (unit === 'Pounds (lb)'
-        ? +(table[donor.name][cat.name] * 2.20462)
-        : table[donor.name][cat.name]), 0);
-      catTotal = +(catTotal.toFixed(2));
-      totalRow.push(catTotal);
-      grandTotal += catTotal;
-    });
-    totalRow.push(+grandTotal.toFixed(2));
-    worksheet.addRow(totalRow);
-    // Set response headers
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="inventory-table-${year}-${month}.xlsx"`);
-    await workbook.xlsx.write(res);
-    res.end();
-  } catch (err) {
-    console.error('Error exporting inventory table:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // Add GET endpoint to fetch shift signups by shiftId
 app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
   try {
@@ -3610,34 +4093,22 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
-    // Find Walmart donorId
-    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
-    if (walmartDonor) {
-      // Fetch all Donations for Walmart
-      const walmartDonations = await prisma.donation.findMany({
-        where: { donorId: walmartDonor.id, organizationId },
-        select: { id: true, createdAt: true }
-      });
-      console.log('Walmart Donations:', walmartDonations);
-      // Fetch all DonationItems for Walmart Donations
-      const walmartDonationIds = walmartDonations.map(d => d.id);
-      if (walmartDonationIds.length > 0) {
-        const walmartItems = await prisma.donationItem.findMany({
-          where: { donationId: { in: walmartDonationIds } },
-          select: { id: true, donationId: true, categoryId: true, weightKg: true }
-        });
-        console.log('Walmart DonationItems:', walmartItems);
-      } else {
-        console.log('No Walmart Donations found.');
-      }
-    } else {
-      console.log('No Walmart donor found.');
-    }
     // Fetch categories
-    const categories = await prisma.donationCategory.findMany({
+    const allCategories = await prisma.donationCategory.findMany({
       where: { organizationId },
       select: { id: true, name: true }
     });
+    
+    // Remove duplicate category names (keep first occurrence)
+    const uniqueCategoryNames = new Set<string>();
+    const categories = allCategories.filter(cat => {
+      if (uniqueCategoryNames.has(cat.name)) {
+        return false;
+      }
+      uniqueCategoryNames.add(cat.name);
+      return true;
+    });
+    
     // Fetch all donation items for this org and date range
     const items = await prisma.donationItem.findMany({
       where: {
@@ -3664,20 +4135,61 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
         table[donor.name][cat.name] = 0;
       });
     });
-    // Fill table with actual weights
+    // Get weighing categories for custom unit conversion
+    const weighingCategories = await prisma.weighingCategory.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        category: true,
+        kilogram_kg_: true,
+        pound_lb_: true
+      }
+    });
+
+    // Fill table with actual weights (store raw kg values)
     items.forEach(item => {
       const donorName = donorIdToName[Number(item.Donation.donorId)];
       const catName = catIdToName[Number(item.categoryId)];
       if (donorName && catName) {
-        let val = item.weightKg;
-        if (unit === 'Pounds (lb)') val = +(val * 2.20462);
-        table[donorName][catName] += val;
+        table[donorName][catName] += item.weightKg;
       }
     });
+
+    // Helper function to convert weight based on selected unit
+    const convertWeight = (weight: number) => {
+      if (weight == null || isNaN(weight)) return 0;
+      
+      // Handle base units
+      if (unit === 'Pounds (lb)') {
+        return +(weight * 2.20462).toFixed(2);
+      }
+      if (unit === 'Kilograms (kg)') {
+        return +weight.toFixed(2);
+      }
+      
+      // Handle custom weighing categories
+      const category = weighingCategories.find(c => c.category === unit);
+      if (category && category.kilogram_kg_ > 0) {
+        // Convert kg to custom unit (divide by kg per unit)
+        return +(weight / category.kilogram_kg_).toFixed(2);
+      }
+      
+      return +weight.toFixed(2);
+    };
+
+    // Convert table values to display units
+    const convertedTable: Record<string, Record<string, number>> = {};
+    donors.forEach(donor => {
+      convertedTable[donor.name] = {};
+      categories.forEach(cat => {
+        convertedTable[donor.name][cat.name] = convertWeight(table[donor.name][cat.name] || 0);
+      });
+    });
+
     res.json({
       donors: donors.map(d => d.name),
       categories: categories.map(c => c.name),
-      table
+      table: convertedTable
     });
   } catch (err) {
     console.error('Error fetching donor-category inventory table:', err);
@@ -4398,39 +4910,39 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
       startDate = new Date(yearNum, monthNum - 1, 1);
       endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
     }
+
+    // Get weighing categories for custom unit conversion
+    const weighingCategories = await prisma.weighingCategory.findMany({
+      where: { organizationId },
+      select: {
+        id: true,
+        category: true,
+        kilogram_kg_: true,
+        pound_lb_: true
+      }
+    });
+
     // Fetch donors
     const donors = await prisma.donor.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
-    // Find Walmart donorId
-    const walmartDonor = donors.find(d => d.name.toLowerCase() === 'walmart');
-    if (walmartDonor) {
-      // Fetch all Donations for Walmart
-      const walmartDonations = await prisma.donation.findMany({
-        where: { donorId: walmartDonor.id, organizationId },
-        select: { id: true, createdAt: true }
-      });
-      console.log('Walmart Donations:', walmartDonations);
-      // Fetch all DonationItems for Walmart Donations
-      const walmartDonationIds = walmartDonations.map(d => d.id);
-      if (walmartDonationIds.length > 0) {
-        const walmartItems = await prisma.donationItem.findMany({
-          where: { donationId: { in: walmartDonationIds } },
-          select: { id: true, donationId: true, categoryId: true, weightKg: true }
-        });
-        console.log('Walmart DonationItems:', walmartItems);
-      } else {
-        console.log('No Walmart Donations found.');
-      }
-    } else {
-      console.log('No Walmart donor found.');
-    }
     // Fetch categories
-    const categories = await prisma.donationCategory.findMany({
+    const allCategories = await prisma.donationCategory.findMany({
       where: { organizationId },
       select: { id: true, name: true }
     });
+    
+    // Remove duplicate category names (keep first occurrence)
+    const uniqueCategoryNames = new Set<string>();
+    const categories = allCategories.filter(cat => {
+      if (uniqueCategoryNames.has(cat.name)) {
+        return false;
+      }
+      uniqueCategoryNames.add(cat.name);
+      return true;
+    });
+    
     // Fetch all donation items for this org and date range
     const items = await prisma.donationItem.findMany({
       where: {
@@ -4444,8 +4956,6 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
       },
       select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
     });
-    // Debug log: print first 10 items and their donorId
-    console.log('Sample donation items:', items.slice(0, 10).map(i => ({ categoryId: i.categoryId, weightKg: i.weightKg, donorId: i.Donation?.donorId })));
     // Build donor x category table
     const donorIdToName: Record<number, string> = {};
     donors.forEach(d => { donorIdToName[d.id] = d.name; });
@@ -4467,20 +4977,48 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
         table[donorName][catName] += item.weightKg;
       }
     });
+
+    // Helper function to convert weight based on selected unit
+    const convertWeight = (weight: number) => {
+      if (weight == null || isNaN(weight)) return 0;
+      
+      // Handle base units
+      if (unit === 'Pounds (lb)') {
+        return +(weight * 2.20462).toFixed(2);
+      }
+      if (unit === 'Kilograms (kg)') {
+        return +weight.toFixed(2);
+      }
+      
+      // Handle custom weighing categories
+      const category = weighingCategories.find(c => c.category === unit);
+      if (category && category.kilogram_kg_ > 0) {
+        // Convert kg to custom unit (divide by kg per unit)
+        return +(weight / category.kilogram_kg_).toFixed(2);
+      }
+      
+      return +weight.toFixed(2);
+    };
+
+    // Helper function to get unit label for display
+    const getUnitLabel = () => {
+      if (unit === 'Kilograms (kg)') return 'kg';
+      if (unit === 'Pounds (lb)') return 'lbs';
+      return unit;
+    };
+
     // Prepare Excel data
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Inventory');
-    // Header row
-    const headerRow = ['Donor', ...categories.map(c => c.name), 'Total'];
+    // Header row with unit labels
+    const headerRow = ['Donor', ...categories.map(c => `${c.name} (${getUnitLabel()})`), `Total (${getUnitLabel()})`];
     worksheet.addRow(headerRow);
     // Data rows
     donors.forEach(donor => {
       const row: (string | number)[] = [donor.name];
       let donorTotal = 0;
       categories.forEach(cat => {
-        let val: number = table[donor.name][cat.name] || 0;
-        if (unit === 'Pounds (lb)') val = +(val * 2.20462).toFixed(2);
-        else val = +val.toFixed(2);
+        const val = convertWeight(table[donor.name][cat.name] || 0);
         row.push(val);
         donorTotal += val;
       });
@@ -4491,11 +5029,8 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     const totalRow: (string | number)[] = ['Total'];
     let grandTotal: number = 0;
     categories.forEach(cat => {
-      let catTotal: number = donors.reduce((sum: number, donor) => sum + (unit === 'Pounds (lb)'
-        ? +(table[donor.name][cat.name] * 2.20462)
-        : table[donor.name][cat.name]), 0);
-      catTotal = +(catTotal.toFixed(2));
-      totalRow.push(catTotal);
+      const catTotal = donors.reduce((sum: number, donor) => sum + convertWeight(table[donor.name][cat.name] || 0), 0);
+      totalRow.push(+catTotal.toFixed(2));
       grandTotal += catTotal;
     });
     totalRow.push(+grandTotal.toFixed(2));
@@ -4641,7 +5176,8 @@ app.get('/api/terms-and-conditions', authenticateToken, async (req: any, res) =>
     console.error('Error fetching terms and conditions:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
-});
+  });
+
 
 // Upload and create new terms and conditions
 app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), async (req: any, res) => {
@@ -4650,15 +5186,33 @@ app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), 
     const userId = req.user.id;
     const { version, title, isActive } = req.body;
     
+    console.log('Terms and conditions upload request:', {
+      organizationId,
+      userId,
+      version,
+      title,
+      isActive,
+      hasFile: !!req.file
+    });
+
     if (!req.file) {
+      console.log('No file uploaded in request');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    console.log('File details:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
     if (!version || !title) {
+      console.log('Missing required fields:', { version: !!version, title: !!title });
       return res.status(400).json({ error: 'Version and title are required' });
     }
 
     // Check if version already exists for this organization
+    console.log('Checking for existing version...');
     const existingVersion = await prisma.termsAndConditions.findUnique({
       where: {
         organizationId_version: {
@@ -4669,14 +5223,25 @@ app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), 
     });
 
     if (existingVersion) {
+      console.log('Version already exists:', version);
       return res.status(400).json({ error: 'Version already exists for this organization' });
     }
 
     // Upload file to Cloudflare R2
-    const { fileUrl, fileName, fileSize } = await uploadToR2(req.file, organizationId);
+    console.log('Attempting to upload file to R2...');
+    let uploadResult;
+    try {
+      uploadResult = await uploadToR2(req.file, organizationId, 'terms-and-conditions');
+      console.log('File uploaded successfully:', uploadResult);
+    } catch (uploadError) {
+      console.error('R2 upload failed:', uploadError);
+      throw uploadError;
+    }
+    const { fileUrl, fileName, fileSize } = uploadResult;
 
     // If this is set as active, deactivate all other versions
     if (isActive === 'true' || isActive === true) {
+      console.log('Deactivating other versions...');
       await prisma.termsAndConditions.updateMany({
         where: { organizationId },
         data: { isActive: false }
@@ -4684,24 +5249,45 @@ app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), 
     }
 
     // Create new terms and conditions record
-    const newTermsAndConditions = await prisma.termsAndConditions.create({
-      data: {
-        organizationId,
-        version,
-        title,
-        fileUrl,
-        fileName,
-        fileSize,
-        isActive: isActive === 'true' || isActive === true,
-        createdBy: userId,
-        updatedAt: new Date()
-      }
-    });
+    console.log('Creating database record...');
+    const createData = {
+      organizationId,
+      version,
+      title,
+      fileUrl,
+      fileName,
+      fileSize,
+      isActive: isActive === 'true' || isActive === true,
+      createdBy: userId,
+      updatedAt: new Date()
+    };
+    console.log('Database create data:', createData);
+    
+    let newTermsAndConditions;
+    try {
+      newTermsAndConditions = await prisma.termsAndConditions.create({
+        data: createData
+      });
+      console.log('Database record created successfully:', newTermsAndConditions.id);
+    } catch (dbError) {
+      console.error('Database creation failed:', dbError);
+      throw dbError;
+    }
 
+    console.log('Terms and conditions created successfully:', newTermsAndConditions.id);
     res.status(201).json(newTermsAndConditions);
   } catch (err) {
     console.error('Error creating terms and conditions:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Error details:', {
+      message: err instanceof Error ? err.message : 'Unknown error',
+      stack: err instanceof Error ? err.stack : undefined,
+      code: (err as any)?.code,
+      statusCode: (err as any)?.statusCode
+    });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : 'Unknown error'
+    });
   }
 });
 
@@ -4778,7 +5364,10 @@ app.delete('/api/terms-and-conditions/:id', authenticateToken, async (req: any, 
     const organizationId = req.user.organizationId;
     const termsId = parseInt(req.params.id);
 
+    console.log('Delete request:', { organizationId, termsId });
+
     // Check if the terms and conditions exists and belongs to the organization
+    console.log('Checking for existing terms and conditions...');
     const existingTerms = await prisma.termsAndConditions.findFirst({
       where: {
         id: termsId,
@@ -4787,26 +5376,48 @@ app.delete('/api/terms-and-conditions/:id', authenticateToken, async (req: any, 
     });
 
     if (!existingTerms) {
+      console.log('Terms and conditions not found:', { termsId, organizationId });
       return res.status(404).json({ error: 'Terms and conditions not found' });
     }
 
+    console.log('Found terms to delete:', {
+      id: existingTerms.id,
+      fileName: existingTerms.fileName,
+      fileUrl: existingTerms.fileUrl
+    });
+
     // Delete file from Cloudflare R2
-    try {
-      await deleteFromR2(existingTerms.fileUrl);
-    } catch (fileError) {
-      console.error('Error deleting file from R2:', fileError);
-      // Continue with database deletion even if file deletion fails
+    if (existingTerms.fileUrl) {
+      try {
+        console.log('Deleting file from R2...');
+        await deleteFromR2(existingTerms.fileUrl);
+        console.log('File deleted from R2 successfully');
+      } catch (fileError) {
+        console.error('Error deleting file from R2:', fileError);
+        // Continue with database deletion even if file deletion fails
+      }
     }
 
     // Delete the terms and conditions record
+    console.log('Deleting database record...');
     await prisma.termsAndConditions.delete({
       where: { id: termsId }
     });
 
+    console.log('Terms and conditions deleted successfully:', termsId);
     res.json({ success: true, message: 'Terms and conditions deleted successfully' });
   } catch (err) {
     console.error('Error deleting terms and conditions:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Error details:', {
+      message: err instanceof Error ? err.message : 'Unknown error',
+      stack: err instanceof Error ? err.stack : undefined,
+      code: (err as any)?.code,
+      statusCode: (err as any)?.statusCode
+    });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : 'Unknown error'
+    });
   }
 });
 
@@ -4816,11 +5427,25 @@ app.put('/api/terms-and-conditions/:id/file', authenticateToken, upload.single('
     const organizationId = req.user.organizationId;
     const termsId = parseInt(req.params.id);
     
+    console.log('File replacement request:', {
+      organizationId,
+      termsId,
+      hasFile: !!req.file
+    });
+    
     if (!req.file) {
+      console.log('No file uploaded in request');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    console.log('File details:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
     // Check if the terms and conditions exists and belongs to the organization
+    console.log('Checking for existing terms and conditions...');
     const existingTerms = await prisma.termsAndConditions.findFirst({
       where: {
         id: termsId,
@@ -4829,21 +5454,33 @@ app.put('/api/terms-and-conditions/:id/file', authenticateToken, upload.single('
     });
 
     if (!existingTerms) {
+      console.log('Terms and conditions not found:', { termsId, organizationId });
       return res.status(404).json({ error: 'Terms and conditions not found' });
     }
 
+    console.log('Found existing terms:', {
+      id: existingTerms.id,
+      fileName: existingTerms.fileName,
+      fileUrl: existingTerms.fileUrl
+    });
+
     // Upload new file to Cloudflare R2
-    const { fileUrl, fileName, fileSize } = await uploadToR2(req.file, organizationId);
+    console.log('Uploading new file to R2...');
+    const { fileUrl, fileName, fileSize } = await uploadToR2(req.file, organizationId, 'terms-and-conditions');
+    console.log('New file uploaded successfully:', { fileUrl, fileName, fileSize });
 
     // Delete old file from R2
     try {
+      console.log('Deleting old file from R2...');
       await deleteFromR2(existingTerms.fileUrl);
+      console.log('Old file deleted successfully');
     } catch (fileError) {
       console.error('Error deleting old file from R2:', fileError);
       // Continue with update even if old file deletion fails
     }
 
     // Update the terms and conditions with new file info
+    console.log('Updating database record...');
     const updatedTerms = await prisma.termsAndConditions.update({
       where: { id: termsId },
       data: {
@@ -4854,9 +5491,281 @@ app.put('/api/terms-and-conditions/:id/file', authenticateToken, upload.single('
       }
     });
 
+    console.log('Terms and conditions file updated successfully:', updatedTerms.id);
     res.json(updatedTerms);
   } catch (err) {
     console.error('Error updating terms and conditions file:', err);
+    console.error('Error details:', {
+      message: err instanceof Error ? err.message : 'Unknown error',
+      stack: err instanceof Error ? err.stack : undefined,
+      code: (err as any)?.code,
+      statusCode: (err as any)?.statusCode
+    });
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: err instanceof Error ? err.message : 'Unknown error'
+    });
+  }
+});
+
+// Shift signup endpoints (public access)
+
+// Get shift details by category and shift name (public endpoint)
+app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) => {
+  try {
+    const { categoryName, shiftName } = req.params;
+    const { date } = req.query;
+    
+    console.log('Fetching shift details for:', { categoryName, shiftName, date });
+    
+    let whereClause: any = {
+      name: shiftName,
+      ShiftCategory: {
+        name: categoryName
+      }
+    };
+    
+    // If date is provided, filter by date
+    if (date && typeof date === 'string') {
+      // Parse the date and create UTC date range
+      const [year, month, day] = date.split('-').map(Number);
+      const startOfDay = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+      const endOfDay = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
+      
+      console.log('Date filtering:', { date, startOfDay, endOfDay });
+      
+      whereClause.startTime = {
+        gte: startOfDay,
+        lt: endOfDay
+      };
+    }
+    
+    // Find the shift by category name, shift name, and optionally date
+    const shift = await prisma.shift.findFirst({
+      where: whereClause,
+      include: {
+        ShiftCategory: true,
+        Organization: true,
+        ShiftSignup: {
+          include: {
+            User: true
+          }
+        }
+      }
+    });
+    
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+    
+    // Calculate available slots
+    const signedUpCount = shift.ShiftSignup.length;
+    const availableSlots = shift.slots - signedUpCount;
+    
+    res.json({
+      id: shift.id,
+      name: shift.name,
+      categoryName: shift.ShiftCategory.name,
+      startTime: shift.startTime,
+      endTime: shift.endTime,
+      location: shift.location,
+      slots: shift.slots,
+      availableSlots: availableSlots,
+      organizationId: shift.organizationId,
+      organizationName: shift.Organization.name,
+      signedUpCount: signedUpCount
+    });
+  } catch (err) {
+    console.error('Error fetching shift details:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Submit shift signup (public endpoint)
+app.post('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) => {
+  try {
+    const { categoryName, shiftName } = req.params;
+    const { email, firstName, lastName, shiftDate } = req.body;
+    
+    console.log('Shift signup request:', { categoryName, shiftName, email, firstName, lastName, shiftDate });
+    
+    // Validate required fields
+    if (!email || !firstName || !lastName || !shiftDate) {
+      return res.status(400).json({ error: 'Email, first name, last name, and date are required' });
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    
+    // Find the shift for the specific date
+    const [year, month, day] = shiftDate.split('-').map(Number);
+    const startOfDay = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+    const endOfDay = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
+    
+    const shift = await prisma.shift.findFirst({
+      where: {
+        name: shiftName,
+        ShiftCategory: {
+          name: categoryName
+        },
+        startTime: {
+          gte: startOfDay,
+          lt: endOfDay
+        }
+      },
+      include: {
+        ShiftCategory: true,
+        Organization: true,
+        ShiftSignup: true
+      }
+    });
+    
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+    
+    // Check if shift is full
+    if (shift.ShiftSignup.length >= shift.slots) {
+      return res.status(400).json({ error: 'Shift is full' });
+    }
+    
+    // Check if user already exists
+    let user = await prisma.user.findUnique({
+      where: { email }
+    });
+    
+    let isNewUser = false;
+    
+    if (!user) {
+      // Create new user
+      isNewUser = true;
+      const tempPassword = Math.random().toString(36).slice(-8); // Temporary password
+      const hashedPassword = await bcrypt.hash(tempPassword, 10);
+      
+      // Generate password reset token
+      const resetToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      const resetTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+      
+      user = await prisma.user.create({
+        data: {
+          email,
+          firstName,
+          lastName,
+          password: hashedPassword,
+          organizationId: shift.organizationId,
+          role: 'VOLUNTEER',
+          status: 'APPROVED', // Auto-approve shift signups
+          resetToken,
+          resetTokenExpiry,
+          updatedAt: new Date()
+        }
+      });
+      
+      console.log('Created new user:', user.id);
+    } else {
+      // Check if user is already signed up for this shift
+      const existingSignup = await prisma.shiftSignup.findFirst({
+        where: {
+          userId: user.id,
+          shiftId: shift.id
+        }
+      });
+      
+      if (existingSignup) {
+        return res.status(400).json({ error: 'You are already signed up for this shift' });
+      }
+    }
+    
+    // Create shift signup
+    const shiftSignup = await prisma.shiftSignup.create({
+      data: {
+        userId: user.id,
+        shiftId: shift.id
+      }
+    });
+    
+    console.log('Created shift signup:', shiftSignup.id);
+    
+    // Send email notification
+    try {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      });
+      
+      let emailSubject, emailText;
+      
+      if (isNewUser) {
+        // New user - send password reset email
+        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${user.resetToken}`;
+        emailSubject = 'Welcome to Hungy - Shift Signup Confirmation & Password Setup';
+        emailText = `Hi ${firstName},
+
+Thank you for signing up for the shift: ${shift.name} (${shift.ShiftCategory.name})
+
+Shift Details:
+- Date & Time: ${new Date(shift.startTime).toLocaleString()} - ${new Date(shift.endTime).toLocaleString()}
+- Location: ${shift.location}
+- Organization: ${shift.Organization.name}
+
+Since this is your first time, please set up your password by clicking the link below:
+${resetUrl}
+
+This link will expire in 24 hours.
+
+Welcome to the team!`;
+      } else {
+        // Existing user - send confirmation email
+        emailSubject = 'Shift Signup Confirmation - Hungy';
+        emailText = `Hi ${firstName},
+
+Your shift signup has been confirmed!
+
+Shift Details:
+- Shift: ${shift.name} (${shift.ShiftCategory.name})
+- Date & Time: ${new Date(shift.startTime).toLocaleString()} - ${new Date(shift.endTime).toLocaleString()}
+- Location: ${shift.location}
+- Organization: ${shift.Organization.name}
+
+Thank you for volunteering!`;
+      }
+      
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: emailSubject,
+        text: emailText,
+      };
+      
+      await transporter.sendMail(mailOptions);
+      console.log('Email sent successfully to:', email);
+    } catch (emailErr) {
+      console.error('Failed to send email:', emailErr);
+      // Don't fail the signup if email fails
+    }
+    
+    res.status(201).json({
+      success: true,
+      message: isNewUser ? 'Signup successful! Please check your email to set up your password.' : 'Signup successful! Confirmation email sent.',
+      shiftSignup: {
+        id: shiftSignup.id,
+        shiftName: shift.name,
+        categoryName: shift.ShiftCategory.name,
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        location: shift.location,
+        selectedDate: shiftDate
+      },
+      isNewUser
+    });
+  } catch (err) {
+    console.error('Error processing shift signup:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

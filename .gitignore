@@ -3,3 +3,11 @@ node_modules
 .env
 
 /generated/prisma
+
+check-all-timezones.js
+check-dates.js
+check-recurring-shifts.js
+debug-api.js
+fix-inventory.js
+fix-timezone.js
+check-timezone-handling.js

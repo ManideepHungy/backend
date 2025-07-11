@@ -7,8 +7,37 @@ import jwt from 'jsonwebtoken'
 import ExcelJS from 'exceljs'
 import nodemailer from 'nodemailer'
 import { upload, uploadToR2, deleteFromR2, generateSignedUrl } from './services/fileUpload'
+import multer from 'multer'
+import path from 'path'
+import fs from 'fs'
 
 dotenv.config()
+
+// Halifax timezone utilities
+const HALIFAX_TIMEZONE = 'America/Halifax';
+
+// Convert UTC date to Halifax timezone
+const toHalifaxTime = (utcDate: Date): Date => {
+  const halifaxDate = new Date(utcDate.toLocaleString('en-CA', { timeZone: HALIFAX_TIMEZONE }));
+  return halifaxDate;
+};
+
+// Convert Halifax timezone to UTC for database storage
+const toUTC = (halifaxDate: Date): Date => {
+  const utcDate = new Date(halifaxDate.toLocaleString('en-CA', { timeZone: 'UTC' }));
+  return utcDate;
+};
+
+// Get Halifax date string (YYYY-MM-DD)
+const getHalifaxDateString = (date: Date): string => {
+  return date.toLocaleDateString('en-CA', { timeZone: HALIFAX_TIMEZONE }).split('/').reverse().join('-');
+};
+
+// Create date in Halifax timezone
+const createHalifaxDate = (year: number, month: number, day: number, hour: number = 0, minute: number = 0): Date => {
+  const halifaxDate = new Date(year, month - 1, day, hour, minute, 0, 0);
+  return halifaxDate;
+};
 
 const app = express()
 const prisma = new PrismaClient()
@@ -3208,6 +3237,7 @@ app.get('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
         { startTime: 'asc' }
       ]
     });
+    
     res.json(shifts);
   } catch (err) {
     console.error('Error fetching recurring shifts:', err);
@@ -3259,13 +3289,13 @@ app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
       return res.status(404).json({ error: 'Shift category not found' });
     }
 
-    // Create recurring shift
+    // Create recurring shift with Halifax timezone handling
     const shift = await prisma.recurringShift.create({
       data: {
         name,
         dayOfWeek,
-        startTime: new Date(startTime),
-        endTime: new Date(endTime),
+        startTime: new Date(startTime), // This will be stored as UTC but represents Halifax time
+        endTime: new Date(endTime),     // This will be stored as UTC but represents Halifax time
         shiftCategoryId,
         location,
         slots,
@@ -3412,10 +3442,32 @@ app.get('/api/shifts', authenticateToken, async (req, res) => {
       },
       orderBy: { startTime: 'asc' }
     });
+    
     res.json(shifts);
   } catch (err) {
     console.error('Error fetching shifts:', err);
     res.status(500).json({ error: 'Failed to fetch shifts' });
+  }
+});
+
+// Get last updated time for shifts
+app.get('/api/shifts/last-updated', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const lastSignup = await prisma.shiftSignup.findFirst({
+      where: { 
+        Shift: { organizationId } 
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true }
+    });
+    
+    const lastUpdated = lastSignup?.createdAt?.getTime() || Date.now();
+    
+    res.json({ lastUpdated });
+  } catch (err) {
+    console.error('Error fetching last updated time:', err);
+    res.status(500).json({ error: 'Failed to fetch last updated time' });
   }
 });
 
@@ -3653,13 +3705,13 @@ app.post('/api/shiftsignups', authenticateToken, async (req: any, res) => {
       return res.status(400).json({ error: 'User is already signed up for this shift' });
     }
 
-    // Create the shift signup
+    // Create the shift signup with Halifax timezone handling
     const signup = await prisma.shiftSignup.create({
       data: {
         userId: Number(userId),
         shiftId: Number(shiftId),
-        checkIn: checkIn ? new Date(checkIn) : null,
-        checkOut: checkOut ? new Date(checkOut) : null,
+        checkIn: checkIn ? new Date(checkIn) : null, // Store as UTC but represents Halifax time
+        checkOut: checkOut ? new Date(checkOut) : null, // Store as UTC but represents Halifax time
         mealsServed: mealsServed || 0
       },
       include: {
@@ -3667,7 +3719,7 @@ app.post('/api/shiftsignups', authenticateToken, async (req: any, res) => {
         Shift: true
       }
     });
-
+    
     res.json(signup);
   } catch (err) {
     console.error('Error creating shift signup:', err);
@@ -5240,13 +5292,13 @@ app.post('/api/terms-and-conditions', authenticateToken, upload.single('file'), 
     const { fileUrl, fileName, fileSize } = uploadResult;
 
     // If this is set as active, deactivate all other versions
-    if (isActive === 'true' || isActive === true) {
-      console.log('Deactivating other versions...');
-      await prisma.termsAndConditions.updateMany({
-        where: { organizationId },
-        data: { isActive: false }
-      });
-    }
+    // if (isActive === 'true' || isActive === true) {
+    //   console.log('Deactivating other versions...');
+    //   await prisma.termsAndConditions.updateMany({
+    //     where: { organizationId },
+    //     data: { isActive: false }
+    //   });
+    // }
 
     // Create new terms and conditions record
     console.log('Creating database record...');
@@ -5330,15 +5382,15 @@ app.put('/api/terms-and-conditions/:id', authenticateToken, async (req: any, res
     }
 
     // If this is set as active, deactivate all other versions
-    if (isActive === 'true' || isActive === true) {
-      await prisma.termsAndConditions.updateMany({
-        where: { 
-          organizationId,
-          id: { not: termsId }
-        },
-        data: { isActive: false }
-      });
-    }
+    // if (isActive === 'true' || isActive === true) {
+    //   await prisma.termsAndConditions.updateMany({
+    //     where: { 
+    //       organizationId,
+    //       id: { not: termsId }
+    //     },
+    //     data: { isActive: false }
+    //   });
+    // }
 
     // Update the terms and conditions
     const updatedTerms = await prisma.termsAndConditions.update({
@@ -5702,22 +5754,16 @@ app.post('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =
       let emailSubject, emailText;
       
       if (isNewUser) {
-        // New user - send password reset email
-        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${user.resetToken}`;
-        emailSubject = 'Welcome to Hungy - Shift Signup Confirmation & Password Setup';
+        // New user - send welcome email
+        emailSubject = 'Welcome to Hungy - Shift Signup Confirmation';
         emailText = `Hi ${firstName},
 
 Thank you for signing up for the shift: ${shift.name} (${shift.ShiftCategory.name})
 
 Shift Details:
-- Date & Time: ${new Date(shift.startTime).toLocaleString()} - ${new Date(shift.endTime).toLocaleString()}
+- Date & Time: ${new Date(shift.startTime).toLocaleString('en-CA', { timeZone: 'America/Halifax' })} - ${new Date(shift.endTime).toLocaleString('en-CA', { timeZone: 'America/Halifax' })}
 - Location: ${shift.location}
 - Organization: ${shift.Organization.name}
-
-Since this is your first time, please set up your password by clicking the link below:
-${resetUrl}
-
-This link will expire in 24 hours.
 
 Welcome to the team!`;
       } else {
@@ -5729,7 +5775,7 @@ Your shift signup has been confirmed!
 
 Shift Details:
 - Shift: ${shift.name} (${shift.ShiftCategory.name})
-- Date & Time: ${new Date(shift.startTime).toLocaleString()} - ${new Date(shift.endTime).toLocaleString()}
+- Date & Time: ${new Date(shift.startTime).toLocaleString('en-CA', { timeZone: 'America/Halifax' })} - ${new Date(shift.endTime).toLocaleString('en-CA', { timeZone: 'America/Halifax' })}
 - Location: ${shift.location}
 - Organization: ${shift.Organization.name}
 
@@ -5752,7 +5798,7 @@ Thank you for volunteering!`;
     
     res.status(201).json({
       success: true,
-      message: isNewUser ? 'Signup successful! Please check your email to set up your password.' : 'Signup successful! Confirmation email sent.',
+      message: 'Signup successful! Confirmation email sent.',
       shiftSignup: {
         id: shiftSignup.id,
         shiftName: shift.name,

@@ -3013,12 +3013,14 @@ app.get('/api/users/:id/agreement', authenticateToken, async (req: any, res) => 
           console.log('Fallback document URL:', documentUrl);
         }
       }
+
     } else if (documentUrl && documentUrl.startsWith('useragreements/')) {
       // Handle relative paths
       documentUrl = `${correctPublicDomain}/${documentUrl}`;
       console.log('Added domain to relative path:', documentUrl);
     }
 
+    console.log('Returning document URL:', documentUrl);
     console.log('Returning document URL:', documentUrl);
 
     res.json({

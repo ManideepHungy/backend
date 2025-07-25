@@ -54,6 +54,7 @@ model Organization {
   id                    Int                  @id @default(autoincrement())
   name                  String               @unique
   address               String?
+  email                 String
   incoming_dollar_value Float?               @default(10)
   Donation              Donation[]
   DonationCategory      DonationCategory[]

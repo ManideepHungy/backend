@@ -2708,6 +2708,7 @@ app.get('/api/organizations', authenticateToken, async (req: any, res) => {
         id: true,
         name: true,
         address: true,
+        email: true,
         incoming_dollar_value: true
       }
     });
@@ -2923,6 +2924,113 @@ app.get('/api/modules', authenticateToken, async (req: any, res) => {
   } catch (err) {
     console.error('Error fetching modules:', err);
     res.status(500).json({ error: 'Failed to fetch modules' });
+  }
+});
+
+
+// Get user agreement document
+app.get('/api/users/:id/agreement', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const userId = parseInt(req.params.id);
+
+    console.log('Fetching user agreement for userId:', userId, 'organizationId:', organizationId);
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      console.log('User not found:', userId);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get user agreement
+    const userAgreement = await prisma.userAgreement.findFirst({
+      where: { userId, organizationId },
+      select: {
+        id: true,
+        signature: true,
+        signedDocumentUrl: true,
+        acceptedAt: true,
+        TermsAndConditions: {
+          select: {
+            title: true,
+            version: true
+          }
+        }
+      }
+    });
+
+    console.log('Found user agreement:', {
+      exists: !!userAgreement,
+      hasSignedDocumentUrl: !!userAgreement?.signedDocumentUrl,
+      signedDocumentUrl: userAgreement?.signedDocumentUrl
+    });
+
+    if (!userAgreement || !userAgreement.signedDocumentUrl) {
+      console.log('No agreement document found for user:', userId);
+      return res.status(404).json({ error: 'No agreement document found for this user' });
+    }
+
+    // Check and potentially fix the URL format
+    let documentUrl = userAgreement.signedDocumentUrl;
+    
+    // Get the correct public domain for user agreements
+    const correctPublicDomain = process.env.CLOUDFLARE_R2_PUBLIC_DOMAIN_USERAGREEMENTS || 'https://pub-f419c4a70b0e43678d4b60ea2eac8295.r2.dev';
+    
+    console.log('Original document URL:', documentUrl);
+    console.log('Correct public domain:', correctPublicDomain);
+    
+    // Extract the file path from the URL if it's a full URL
+    if (documentUrl && documentUrl.includes('http')) {
+      try {
+        const url = new URL(documentUrl);
+        const filePath = url.pathname.substring(1); // Remove leading slash
+        
+        console.log('Extracted file path:', filePath);
+        
+        // Check if it starts with useragreements path
+        if (filePath.startsWith('useragreements/')) {
+          // Reconstruct with correct domain
+          documentUrl = `${correctPublicDomain}/${filePath}`;
+          console.log('Corrected document URL from', userAgreement.signedDocumentUrl, 'to', documentUrl);
+        } else if (filePath.includes('useragreements/')) {
+          // Handle cases where the path might have extra parts
+          const agreementIndex = filePath.indexOf('useragreements/');
+          const cleanPath = filePath.substring(agreementIndex);
+          documentUrl = `${correctPublicDomain}/${cleanPath}`;
+          console.log('Cleaned document URL from', userAgreement.signedDocumentUrl, 'to', documentUrl);
+        }
+      } catch (urlError) {
+        console.error('Error parsing document URL:', urlError);
+        // If URL parsing fails, try to construct a fallback URL
+        if (documentUrl.includes('useragreements/')) {
+          const pathStart = documentUrl.indexOf('useragreements/');
+          const cleanPath = documentUrl.substring(pathStart);
+          documentUrl = `${correctPublicDomain}/${cleanPath}`;
+          console.log('Fallback document URL:', documentUrl);
+        }
+      }
+    } else if (documentUrl && documentUrl.startsWith('useragreements/')) {
+      // Handle relative paths
+      documentUrl = `${correctPublicDomain}/${documentUrl}`;
+      console.log('Added domain to relative path:', documentUrl);
+    }
+
+    console.log('Returning document URL:', documentUrl);
+
+    res.json({
+      documentUrl: documentUrl,
+      signature: userAgreement.signature,
+      acceptedAt: userAgreement.acceptedAt,
+      termsTitle: userAgreement.TermsAndConditions?.title,
+      termsVersion: userAgreement.TermsAndConditions?.version
+    });
+  } catch (err) {
+    console.error('Error fetching user agreement:', err);
+    res.status(500).json({ error: 'Failed to fetch user agreement' });
   }
 });
 
@@ -3736,7 +3844,8 @@ app.get('/api/organizations', authenticateToken, async (req, res) => {
       select: {
         id: true,
         name: true,
-        address: true
+        address: true,
+        email: true
       }
     });
     res.json(organizations);
@@ -3759,7 +3868,8 @@ app.get('/api/organizations/:id', authenticateToken, async (req, res) => {
       select: {
         id: true,
         name: true,
-        address: true
+        address: true,
+        email: true
       }
     });
 
@@ -3838,15 +3948,20 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid organization ID' });
     }
 
-    const { name, address, incoming_dollar_value } = req.body;
+    const { name, address, email, incoming_dollar_value } = req.body;
 
     // Validate required fields
     if (!name) {
       return res.status(400).json({ error: 'Name is required' });
     }
 
-    // Validate address format
-    if (address) {
+    // Validate email format if provided
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Validate address format if provided
+    if (address !== undefined && address !== null && address !== '') {
       try {
         const addresses = JSON.parse(address);
         if (!Array.isArray(addresses)) {
@@ -3886,7 +4001,8 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
     // Prepare update data
     const updateData: any = {
       name,
-      address: address || existing.address
+      address: address || existing.address,
+      email: email || existing.email
     };
 
     // Add incoming_dollar_value if provided
@@ -3901,6 +4017,7 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
         id: true,
         name: true,
         address: true,
+        email: true,
         incoming_dollar_value: true
       }
     });

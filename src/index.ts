@@ -3926,12 +3926,14 @@ app.post('/api/organizations', authenticateToken, async (req: any, res) => {
     const organization = await prisma.organization.create({
       data: {
         name,
-        address
+        address,
+        email: req.body.email || '' // Add email field
       },
       select: {
         id: true,
         name: true,
-        address: true
+        address: true,
+        email: true
       }
     });
 

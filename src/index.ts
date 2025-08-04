@@ -2218,7 +2218,7 @@ app.get('/api/users/:id', authenticateToken, async (req, res) => {
         lastName: true,
         role: true,
         phone: true,
-        Organization: {
+        organization: {
           select: {
             name: true
           }
@@ -2232,7 +2232,7 @@ app.get('/api/users/:id', authenticateToken, async (req, res) => {
       email: user.email,
       role: user.role,
       phone: user.phone,
-      organizationName: user.Organization?.name || 'Unknown Organization'
+      organizationName: user.organization?.name || 'Unknown Organization'
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user' });
@@ -3182,7 +3182,7 @@ app.get('/api/users/permissions/overview', authenticateToken, async (req: any, r
         email: true,
         role: true,
         status: true,
-        UserModulePermission: {
+        modulePermissions: {
           include: { Module: true }
         }
       },
@@ -3193,8 +3193,8 @@ app.get('/api/users/permissions/overview', authenticateToken, async (req: any, r
     });
 
     const result = users.map(user => {
-      const permissionCount = user.UserModulePermission.filter(p => p.canAccess).length;
-      const totalModules = user.UserModulePermission.length;
+      const permissionCount = user.modulePermissions.filter((p: any) => p.canAccess).length;
+      const totalModules = user.modulePermissions.length;
       
       return {
         id: user.id,

@@ -54,8 +54,8 @@ model Organization {
   id                    Int                  @id @default(autoincrement())
   name                  String               @unique
   address               String?
-  email                 String
   incoming_dollar_value Float?               @default(10)
+  email                 String
   Donation              Donation[]
   DonationCategory      DonationCategory[]
   Donor                 Donor[]
@@ -70,13 +70,15 @@ model Organization {
 model RecurringShift {
   id              Int           @id @default(autoincrement())
   name            String
-  dayOfWeek       Int
+  dayOfWeek       Int?
   startTime       DateTime
   endTime         DateTime
   shiftCategoryId Int
   location        String
   slots           Int
   organizationId  Int
+  isRecurring     Boolean       @default(true)
+  isActive        Boolean       @default(true)
   Organization    Organization  @relation(fields: [organizationId], references: [id])
   ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
 }
@@ -90,6 +92,7 @@ model Shift {
   location        String
   slots           Int
   organizationId  Int
+  isActive        Boolean       @default(true)
   Donation        Donation[]
   Organization    Organization  @relation(fields: [organizationId], references: [id])
   ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
@@ -131,15 +134,15 @@ model User {
   createdAt            DateTime               @default(now())
   organizationId       Int
   role                 UserRole               @default(VOLUNTEER)
-  status               UserStatus             @default(PENDING)
-  approvedBy           Int?
-  approvedAt           DateTime?
-  deniedBy             Int?
-  deniedAt             DateTime?
-  denialReason         String?
   resetToken           String?
   resetTokenExpiry     DateTime?
   updatedAt            DateTime
+  approvedAt           DateTime?
+  approvedBy           Int?
+  denialReason         String?
+  deniedAt             DateTime?
+  deniedBy             Int?
+  status               UserStatus             @default(PENDING)
   ShiftSignup          ShiftSignup[]
   Organization         Organization           @relation(fields: [organizationId], references: [id])
   UserAgreement        UserAgreement[]

@@ -1,4 +1,4 @@
-import express from 'express'
+import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import { PrismaClient } from '@prisma/client'
@@ -10,6 +10,21 @@ import { upload, uploadToR2, deleteFromR2, generateSignedUrl } from './services/
 import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
+
+// Extend Express Request interface to include user property
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: number;
+        userId: number;
+        email: string;
+        role: string;
+        organizationId: number;
+      };
+    }
+  }
+}
 
 dotenv.config()
 
@@ -60,7 +75,7 @@ app.use(cors())
 app.use(express.json())
 
 // Middleware to verify JWT token
-const authenticateToken = (req: any, res: any, next: any) => {
+const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers['authorization']
   const token = authHeader && authHeader.split(' ')[1]
 
@@ -565,10 +580,11 @@ app.get('/api/outgoing-stats', authenticateToken, async (req: any, res) => {
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
-    // Get all shifts for this organization and date range
+    // Get all active shifts for this organization and date range
     const shifts = await prisma.shift.findMany({
       where: {
         organizationId,
+        isActive: true, // Only active shifts
         startTime: {
           gte: startDate,
           lte: endDate
@@ -656,10 +672,11 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
-    // Get all shifts for this organization and date range
+    // Get all active shifts for this organization and date range
     const shifts = await prisma.shift.findMany({
       where: {
         organizationId,
+        isActive: true, // Only active shifts
         startTime: {
           gte: startDate,
           lte: endDate
@@ -3535,30 +3552,7 @@ app.delete('/api/recurring-shifts/:id', authenticateToken, async (req: any, res)
 
 // --- Shift CRUD Operations ---
 
-// Get all shifts for the organization
-app.get('/api/shifts', authenticateToken, async (req, res) => {
-  const reqAny = req as any;
-  try {
-    const organizationId = reqAny.user.organizationId;
-    const shifts = await prisma.shift.findMany({
-      where: { organizationId },
-      include: { 
-        ShiftCategory: true,
-        ShiftSignup: {
-          include: {
-            User: true
-          }
-        }
-      },
-      orderBy: { startTime: 'asc' }
-    });
-    
-    res.json(shifts);
-  } catch (err) {
-    console.error('Error fetching shifts:', err);
-    res.status(500).json({ error: 'Failed to fetch shifts' });
-  }
-});
+
 
 // Get last updated time for shifts
 app.get('/api/shifts/last-updated', authenticateToken, async (req: any, res) => {
@@ -3722,7 +3716,7 @@ app.post('/api/schedule-shift', authenticateToken, async (req: any, res) => {
     if (!rec) return res.status(404).json({ error: 'Recurring shift not found' });
     // Calculate next occurrence date
     const today = new Date();
-    const dayDiff = (rec.dayOfWeek - today.getDay() + 7) % 7 || 7;
+    const dayDiff = rec.dayOfWeek ? (rec.dayOfWeek - today.getDay() + 7) % 7 || 7 : 0;
     const nextDate = new Date(today);
     nextDate.setDate(today.getDate() + dayDiff);
     // Set start/end times for next occurrence
@@ -5933,6 +5927,655 @@ Thank you for volunteering!`;
     });
   } catch (err) {
     console.error('Error processing shift signup:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Donation Categories CRUD endpoints
+app.get('/api/donation-categories', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const categories = await prisma.donationCategory.findMany({
+      where: { organizationId: user.organizationId },
+      orderBy: { name: 'asc' }
+    });
+    res.json(categories);
+  } catch (err) {
+    console.error('Error fetching donation categories:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/donation-categories', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const { name, icon } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+
+    // Check if category already exists
+    const existingCategory = await prisma.donationCategory.findFirst({
+      where: {
+        name: name.trim(),
+        organizationId: user!.organizationId
+      }
+    });
+
+    if (existingCategory) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    const category = await prisma.donationCategory.create({
+      data: {
+        name: name.trim(),
+        icon: icon || null,
+        organizationId: user.organizationId
+      }
+    });
+
+    res.status(201).json(category);
+  } catch (err) {
+    console.error('Error creating donation category:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/donation-categories/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const categoryId = parseInt(req.params.id);
+    const { name, icon } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+
+    // Check if category exists and belongs to user's organization
+    const existingCategory = await prisma.donationCategory.findFirst({
+      where: {
+        id: categoryId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingCategory) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if new name conflicts with existing category
+    const nameConflict = await prisma.donationCategory.findFirst({
+      where: {
+        name: name.trim(),
+        organizationId: user.organizationId,
+        id: { not: categoryId }
+      }
+    });
+
+    if (nameConflict) {
+      return res.status(400).json({ error: 'Category with this name already exists' });
+    }
+
+    const updatedCategory = await prisma.donationCategory.update({
+      where: { id: categoryId },
+      data: {
+        name: name.trim(),
+        icon: icon || null
+      }
+    });
+
+    res.json(updatedCategory);
+  } catch (err) {
+    console.error('Error updating donation category:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/donation-categories/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const categoryId = parseInt(req.params.id);
+
+    // Check if category exists and belongs to user's organization
+    const existingCategory = await prisma.donationCategory.findFirst({
+      where: {
+        id: categoryId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingCategory) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if category is being used in donation items
+    const donationItems = await prisma.donationItem.findFirst({
+      where: { categoryId }
+    });
+
+    if (donationItems) {
+      return res.status(400).json({ 
+        error: 'Cannot delete category. It is being used in donation items.' 
+      });
+    }
+
+    await prisma.donationCategory.delete({
+      where: { id: categoryId }
+    });
+
+    res.json({ message: 'Category deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting donation category:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- One-Time Shift Management Endpoints ---
+
+// Create one-time shift
+app.post('/api/shifts/one-time', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { name, startTime, endTime, shiftCategoryId, location, slots, isActive = true } = req.body;
+
+    // Validate required fields
+    if (!name || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    // Validate dates
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+
+    if (start >= end) {
+      return res.status(400).json({ error: 'End time must be after start time' });
+    }
+
+    // Check if shift category exists and belongs to user's organization
+    const category = await prisma.shiftCategory.findFirst({
+      where: {
+        id: shiftCategoryId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!category) {
+      return res.status(400).json({ error: 'Invalid shift category' });
+    }
+
+    // Create one-time shift in RecurringShift table
+    const oneTimeShift = await prisma.recurringShift.create({
+      data: {
+        name,
+        dayOfWeek: null, // null for one-time shifts
+        startTime: start,
+        endTime: end,
+        shiftCategoryId,
+        location,
+        slots: parseInt(slots),
+        organizationId: user.organizationId,
+        isRecurring: false // mark as one-time
+      }
+    });
+
+    res.status(201).json(oneTimeShift);
+  } catch (err) {
+    console.error('Error creating one-time shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all shifts (recurring and one-time) with filtering
+app.get('/api/shifts', authenticateToken, async (req, res) => {
+  try {
+    console.log('API HIT', req.query);
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { type = 'all', isActive, month, year } = req.query;
+
+    const whereClause: any = {
+      organizationId: user.organizationId
+    };
+
+    // Filter by type
+    if (type === 'recurring') {
+      whereClause.isRecurring = true;
+    } else if (type === 'one-time') {
+      whereClause.isRecurring = false;
+    }
+
+    // Filter by active status
+    if (isActive !== undefined && isActive !== '') {
+      whereClause.isActive = isActive === 'true';
+    }
+
+    console.log('whereClause', whereClause);
+
+    const shifts = await prisma.recurringShift.findMany({
+      where: whereClause,
+      include: {
+        ShiftCategory: true
+      },
+      orderBy: [
+        { isRecurring: 'desc' }, // recurring first
+        { startTime: 'asc' }
+      ]
+    });
+
+    res.json(shifts);
+  } catch (err) {
+    console.error('Error fetching shifts:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update recurring shift (both recurring and one-time)
+app.put('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const { name, startTime, endTime, shiftCategoryId, location, slots, isActive, dayOfWeek } = req.body;
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Prepare update data
+    const updateData: any = {};
+
+    if (name !== undefined) updateData.name = name;
+    if (location !== undefined) updateData.location = location;
+    if (slots !== undefined) updateData.slots = parseInt(slots);
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (shiftCategoryId !== undefined) updateData.shiftCategoryId = parseInt(shiftCategoryId);
+
+    // Handle time updates based on shift type
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+
+      if (start >= end) {
+        return res.status(400).json({ error: 'End time must be after start time' });
+      }
+
+      updateData.startTime = start;
+      updateData.endTime = end;
+    }
+
+    // Handle dayOfWeek for recurring shifts
+    if (existingShift.isRecurring && dayOfWeek !== undefined) {
+      updateData.dayOfWeek = parseInt(dayOfWeek);
+    } else if (!existingShift.isRecurring) {
+      updateData.dayOfWeek = null;
+    }
+
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: shiftId },
+      data: updateData,
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(updatedShift);
+  } catch (err) {
+    console.error('Error updating shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update shift (both recurring and one-time)
+app.put('/api/shifts/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const { name, startTime, endTime, shiftCategoryId, location, slots, isActive } = req.body;
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Prepare update data
+    const updateData: any = {};
+
+    if (name !== undefined) updateData.name = name;
+    if (location !== undefined) updateData.location = location;
+    if (slots !== undefined) updateData.slots = parseInt(slots);
+    if (isActive !== undefined) updateData.isActive = isActive;
+
+    // Handle time updates based on shift type
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+
+      if (start >= end) {
+        return res.status(400).json({ error: 'End time must be after start time' });
+      }
+
+      updateData.startTime = start;
+      updateData.endTime = end;
+    }
+
+    // Validate shift category if provided
+    if (shiftCategoryId) {
+      const category = await prisma.shiftCategory.findFirst({
+        where: {
+          id: shiftCategoryId,
+          organizationId: user.organizationId
+        }
+      });
+
+      if (!category) {
+        return res.status(400).json({ error: 'Invalid shift category' });
+      }
+
+      updateData.shiftCategoryId = shiftCategoryId;
+    }
+
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: shiftId },
+      data: updateData,
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(updatedShift);
+  } catch (err) {
+    console.error('Error updating shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Toggle shift active status
+app.put('/api/shifts/:id/toggle-active', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const { isActive } = req.body;
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ error: 'isActive must be a boolean' });
+    }
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: shiftId },
+      data: { isActive },
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(updatedShift);
+  } catch (err) {
+    console.error('Error toggling shift active status:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete shift
+app.delete('/api/shifts/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Check if shift has any signups (for one-time shifts)
+    if (!existingShift.isRecurring) {
+      const signups = await prisma.shiftSignup.findFirst({
+        where: {
+          Shift: {
+            // This would need to be adjusted based on how you link one-time shifts to actual shifts
+            // For now, we'll just check if there are any shifts with the same name/time
+            name: existingShift.name,
+            startTime: existingShift.startTime,
+            organizationId: user.organizationId
+          }
+        }
+      });
+
+      if (signups) {
+        return res.status(400).json({ 
+          error: 'Cannot delete shift. It has volunteer signups.' 
+        });
+      }
+    }
+
+    await prisma.recurringShift.delete({
+      where: { id: shiftId }
+    });
+
+    res.json({ message: 'Shift deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Toggle recurring shift active status
+app.put('/api/recurring-shifts/:id/toggle-active', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const { isActive } = req.body;
+
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ error: 'isActive must be a boolean' });
+    }
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: shiftId },
+      data: { isActive },
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(updatedShift);
+  } catch (err) {
+    console.error('Error toggling shift active status:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete recurring shift
+app.delete('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Check if shift has any signups (for one-time shifts)
+    if (!existingShift.isRecurring) {
+      const signups = await prisma.shiftSignup.findFirst({
+        where: {
+          Shift: {
+            // This would need to be adjusted based on how you link one-time shifts to actual shifts
+            // For now, we'll just check if there are any shifts with the same name/time
+            name: existingShift.name,
+            startTime: existingShift.startTime,
+            organizationId: user.organizationId
+          }
+        }
+      });
+
+      if (signups) {
+        return res.status(400).json({ 
+          error: 'Cannot delete shift. It has volunteer signups.' 
+        });
+      }
+    }
+
+    await prisma.recurringShift.delete({
+      where: { id: shiftId }
+    });
+
+    res.json({ message: 'Shift deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update existing recurring shifts endpoint to handle both types
+app.get('/api/recurring-shifts', authenticateToken, async (req, res) => {
+  try {
+    console.log('API HIT', req.query);
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const { type = 'all', isActive } = req.query;
+    
+    const whereClause: any = {
+      organizationId: user.organizationId
+    };
+
+    // Filter by type
+    if (type === 'recurring') {
+      whereClause.isRecurring = true;
+    } else if (type === 'one-time') {
+      whereClause.isRecurring = false;
+    }
+
+    // Filter by active status
+    if (isActive !== undefined && isActive !== '') {
+      whereClause.isActive = isActive === 'true';
+    }
+
+    const shifts = await prisma.recurringShift.findMany({
+      where: whereClause,
+      include: {
+        ShiftCategory: true
+      },
+      orderBy: [
+        { isRecurring: 'desc' }, // recurring first
+        { startTime: 'asc' }
+      ]
+    });
+
+    res.json(shifts);
+  } catch (err) {
+    console.error('Error fetching shifts:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

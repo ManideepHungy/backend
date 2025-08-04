@@ -12,7 +12,8 @@ async function main() {
     data: {
       name: 'Community Food Bank',
       address: '123 Main Street, Downtown, CA 90210',
-      incoming_dollar_value: 12.50
+      incoming_dollar_value: 12.50,
+      email: 'info@communityfoodbank.org'
     }
   });
 
@@ -20,7 +21,8 @@ async function main() {
     data: {
       name: 'Hope Kitchen',
       address: '456 Oak Avenue, Westside, CA 90211',
-      incoming_dollar_value: 15.00
+      incoming_dollar_value: 15.00,
+      email: 'info@hopekitchen.org'
     }
   });
 
@@ -499,8 +501,7 @@ async function main() {
       organizationId: organization1.id,
       kilogram_kg_: 1.0,
       pound_lb_: 2.20462,
-      category: 'Backpack',
-      noofmeals: 5
+      category: 'Backpack'
     }
   });
 
@@ -509,8 +510,7 @@ async function main() {
       organizationId: organization1.id,
       kilogram_kg_: 2.5,
       pound_lb_: 5.51155,
-      category: 'Family Box',
-      noofmeals: 12
+      category: 'Family Box'
     }
   });
 
@@ -519,8 +519,7 @@ async function main() {
       organizationId: organization1.id,
       kilogram_kg_: 0.5,
       pound_lb_: 1.10231,
-      category: 'Individual Meal',
-      noofmeals: 1
+      category: 'Individual Meal'
     }
   });
 
@@ -529,8 +528,7 @@ async function main() {
       organizationId: organization1.id,
       kilogram_kg_: 5.0,
       pound_lb_: 11.0231,
-      category: 'Large Family Pack',
-      noofmeals: 25
+      category: 'Large Family Pack'
     }
   });
 
@@ -539,8 +537,7 @@ async function main() {
       organizationId: organization1.id,
       kilogram_kg_: 3.0,
       pound_lb_: 6.61386,
-      category: 'Senior Box',
-      noofmeals: 15
+      category: 'Senior Box'
     }
   });
 
@@ -549,8 +546,7 @@ async function main() {
       organizationId: organization2.id,
       kilogram_kg_: 1.5,
       pound_lb_: 3.30693,
-      category: 'Emergency Pack',
-      noofmeals: 8
+      category: 'Emergency Pack'
     }
   });
 

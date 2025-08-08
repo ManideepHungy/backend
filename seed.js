@@ -80,6 +80,18 @@ async function main() {
       lastName: 'Wilson',
       organizationId: organization1.id,
       role: 'VOLUNTEER',
+      // Add some profile fields for testing
+      ageBracket: 'AGE_30_39',
+      pronouns: 'HE_HIM',
+      address: '456 Oak Street, Downtown, CA 90210',
+      city: 'Downtown',
+      postalCode: '90210',
+      emergencyContactName: 'Sarah Wilson',
+      emergencyContactNumber: '555-0105',
+      allergies: 'None',
+      preferredDays: 'Weekends',
+      frequency: 'WEEKLY',
+      canCallIfShortHanded: true,
       updatedAt: new Date()
     }
   });
@@ -93,6 +105,31 @@ async function main() {
       lastName: 'Martinez',
       organizationId: organization2.id,
       role: 'ADMIN',
+      updatedAt: new Date()
+    }
+  });
+
+  // Add a youth volunteer for testing
+  const youthVolunteer = await prisma.user.create({
+    data: {
+      email: 'youth@communityfoodbank.org',
+      phone: '555-0106',
+      password: hashedPassword,
+      firstName: 'Alex',
+      lastName: 'Thompson',
+      organizationId: organization1.id,
+      role: 'VOLUNTEER',
+      // Youth volunteer specific fields
+      ageBracket: 'UNDER_16',
+      pronouns: 'THEY_THEM',
+      registrationType: 'MINOR',
+      parentGuardianName: 'Jennifer Thompson',
+      parentGuardianEmail: 'jennifer.thompson@email.com',
+      emergencyContactName: 'Jennifer Thompson',
+      emergencyContactNumber: '555-0107',
+      schoolWorkCommitment: true,
+      requiredHours: 20,
+      howDidYouHear: 'SCHOOL',
       updatedAt: new Date()
     }
   });
@@ -330,6 +367,97 @@ async function main() {
 
   console.log('✅ Shifts created');
 
+  // Create Shift Registration Fields
+  console.log('Creating shift registration fields...');
+  
+  // For recurringShift1 - Basic fields only (default)
+  await prisma.shiftRegistrationFields.create({
+    data: {
+      recurringShiftId: recurringShift1.id,
+      requireFirstName: true,
+      requireLastName: true,
+      requireEmail: true,
+      // All other fields default to false
+    }
+  });
+
+  // For recurringShift2 - Include some additional fields
+  await prisma.shiftRegistrationFields.create({
+    data: {
+      recurringShiftId: recurringShift2.id,
+      requireFirstName: true,
+      requireLastName: true,
+      requireEmail: true,
+      requirePhone: true,
+      requireAgeBracket: true,
+      requirePronouns: true,
+      requireEmergencyContactName: true,
+      requireEmergencyContactNumber: true,
+    }
+  });
+
+  // For recurringShift3 - Include more comprehensive fields
+  await prisma.shiftRegistrationFields.create({
+    data: {
+      recurringShiftId: recurringShift3.id,
+      requireFirstName: true,
+      requireLastName: true,
+      requireEmail: true,
+      requirePhone: true,
+      requireAddress: true,
+      requireCity: true,
+      requirePostalCode: true,
+      requireAgeBracket: true,
+      requireBirthdate: true,
+      requirePronouns: true,
+      requireEmergencyContactName: true,
+      requireEmergencyContactNumber: true,
+      requireAllergies: true,
+      requireMedicalConcerns: true,
+      requirePreferredDays: true,
+      requirePreferredShifts: true,
+      requireFrequency: true,
+      requireCanCallIfShortHanded: true,
+      requireHowDidYouHear: true,
+    }
+  });
+
+  // Create a fourth recurring shift for youth volunteer focused fields
+  const recurringShift4 = await prisma.recurringShift.create({
+    data: {
+      name: 'Youth Volunteer Program',
+      dayOfWeek: 6, // Saturday
+      startTime: new Date('2024-01-01T10:00:00Z'),
+      endTime: new Date('2024-01-01T14:00:00Z'),
+      shiftCategoryId: weekendShift.id,
+      location: 'Youth Center',
+      slots: 8,
+      organizationId: organization1.id
+    }
+  });
+
+  // For recurringShift4 - Youth volunteer focused fields
+  await prisma.shiftRegistrationFields.create({
+    data: {
+      recurringShiftId: recurringShift4.id,
+      requireFirstName: true,
+      requireLastName: true,
+      requireEmail: true,
+      requirePhone: true,
+      requireAgeBracket: true,
+      requireBirthdate: true,
+      requirePronouns: true,
+      requireParentGuardianName: true,
+      requireParentGuardianEmail: true,
+      requireEmergencyContactName: true,
+      requireEmergencyContactNumber: true,
+      requireSchoolWorkCommitment: true,
+      requireRequiredHours: true,
+    }
+  });
+
+  console.log('✅ Shift registration fields created');
+
   // Create Shift Signups
   console.log('Creating shift signups...');
   const signup1 = await prisma.shiftSignup.create({
@@ -555,12 +683,13 @@ async function main() {
   console.log('🎉 Database seeding completed successfully!');
   console.log('\n📊 Sample Data Summary:');
   console.log(`- Organizations: 2`);
-  console.log(`- Users: 5 (1 Admin, 1 Staff, 2 Volunteers, 1 Hope Kitchen Admin)`);
+  console.log(`- Users: 6 (1 Admin, 1 Staff, 3 Volunteers, 1 Hope Kitchen Admin)`);
   console.log(`- Donors: 4`);
   console.log(`- Donation Categories: 6`);
   console.log(`- Shift Categories: 5`);
   console.log(`- Recurring Shifts: 3`);
   console.log(`- Shifts: 4`);
+  console.log(`- Shift Registration Fields: 4 (with different field configurations)`);
   console.log(`- Shift Signups: 4`);
   console.log(`- Donations: 4`);
   console.log(`- Donation Items: 8`);
@@ -568,6 +697,11 @@ async function main() {
   console.log('\n🔑 Login Credentials:');
   console.log('Email: admin@communityfoodbank.org');
   console.log('Password: password123');
+  console.log('\n🧪 Test Data for New Features:');
+  console.log('- Shift 1: Basic fields only (firstName, lastName, email)');
+  console.log('- Shift 2: Basic + phone, ageBracket, pronouns, emergency contact');
+  console.log('- Shift 3: Comprehensive fields including address, health info, preferences');
+  console.log('- Shift 4: Youth volunteer focused with parent/guardian fields');
 }
 
 main()

@@ -81,6 +81,7 @@ model RecurringShift {
   isActive        Boolean       @default(true)
   Organization    Organization  @relation(fields: [organizationId], references: [id])
   ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
+  registrationFields ShiftRegistrationFields?
 }
 
 model Shift {
@@ -122,6 +123,65 @@ model ShiftSignup {
   Donation    Donation[]
   Shift       Shift      @relation(fields: [shiftId], references: [id])
   User        User       @relation(fields: [userId], references: [id])
+}
+
+model ShiftRegistrationFields {
+  id          Int      @id @default(autoincrement())
+  recurringShiftId Int @unique  // One record per recurring shift
+  recurringShift RecurringShift @relation(fields: [recurringShiftId], references: [id], onDelete: Cascade)
+  
+  // Basic fields (always required)
+  requireFirstName Boolean @default(true)
+  requireLastName  Boolean @default(true)
+  requireEmail     Boolean @default(true)
+  
+  // Personal Information
+  requireAgeBracket        Boolean @default(false)
+  requireBirthdate         Boolean @default(false)
+  requirePronouns          Boolean @default(false)
+  
+  // Contact & Address
+  requirePhone             Boolean @default(false)
+  requireAddress           Boolean @default(false)
+  requireCity              Boolean @default(false)
+  requirePostalCode        Boolean @default(false)
+  requireHomePhone         Boolean @default(false)
+  
+  // Emergency Contact
+  requireEmergencyContactName    Boolean @default(false)
+  requireEmergencyContactNumber  Boolean @default(false)
+  
+  // Communication Preferences
+  requireCommunicationPreferences Boolean @default(false)
+  
+  // Profile
+  requireProfilePictureUrl Boolean @default(false)
+  
+  // Health & Safety
+  requireAllergies         Boolean @default(false)
+  requireMedicalConcerns   Boolean @default(false)
+  
+  // Volunteering Preferences
+  requirePreferredDays     Boolean @default(false)
+  requirePreferredShifts   Boolean @default(false)
+  requireFrequency         Boolean @default(false)
+  requirePreferredPrograms Boolean @default(false)
+  requireCanCallIfShortHanded Boolean @default(false)
+  
+  // Commitment Details
+  requireSchoolWorkCommitment Boolean @default(false)
+  requireRequiredHours     Boolean @default(false)
+  
+  // Additional Information
+  requireHowDidYouHear     Boolean @default(false)
+  requireStartDate         Boolean @default(false)
+  
+  // Youth Volunteer Information
+  requireParentGuardianName    Boolean @default(false)
+  requireParentGuardianEmail   Boolean @default(false)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model User {

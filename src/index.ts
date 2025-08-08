@@ -5725,6 +5725,18 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
       return res.status(404).json({ error: 'Shift not found' });
     }
     
+    // Find the corresponding recurring shift to get registration fields
+    const recurringShift = await prisma.recurringShift.findFirst({
+      where: {
+        name: shift.name,
+        shiftCategoryId: shift.shiftCategoryId,
+        organizationId: shift.organizationId
+      },
+      include: {
+        registrationFields: true
+      }
+    });
+    
     // Calculate available slots
     const signedUpCount = shift.ShiftSignup.length;
     const availableSlots = shift.slots - signedUpCount;
@@ -5740,7 +5752,8 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
       availableSlots: availableSlots,
       organizationId: shift.organizationId,
       organizationName: shift.Organization.name,
-      signedUpCount: signedUpCount
+      signedUpCount: signedUpCount,
+      registrationFields: recurringShift?.registrationFields || null
     });
   } catch (err) {
     console.error('Error fetching shift details:', err);
@@ -5752,7 +5765,38 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
 app.post('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) => {
   try {
     const { categoryName, shiftName } = req.params;
-    const { email, firstName, lastName, shiftDate } = req.body;
+    const { 
+      email, 
+      firstName, 
+      lastName, 
+      shiftDate,
+      // Dynamic fields
+      ageBracket,
+      birthdate,
+      pronouns,
+      phone,
+      address,
+      city,
+      postalCode,
+      homePhone,
+      emergencyContactName,
+      emergencyContactNumber,
+      communicationPreferences,
+      profilePictureUrl,
+      allergies,
+      medicalConcerns,
+      preferredDays,
+      preferredShifts,
+      frequency,
+      preferredPrograms,
+      canCallIfShortHanded,
+      schoolWorkCommitment,
+      requiredHours,
+      howDidYouHear,
+      startDate,
+      parentGuardianName,
+      parentGuardianEmail
+    } = req.body;
     
     console.log('Shift signup request:', { categoryName, shiftName, email, firstName, lastName, shiftDate });
     
@@ -5816,19 +5860,49 @@ app.post('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =
       const resetToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
       const resetTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
       
+      // Prepare user data with dynamic fields
+      const userData: any = {
+        email,
+        firstName,
+        lastName,
+        password: hashedPassword,
+        organizationId: shift.organizationId,
+        role: 'VOLUNTEER',
+        status: 'APPROVED', // Auto-approve shift signups
+        resetToken,
+        resetTokenExpiry,
+        updatedAt: new Date()
+      };
+
+      // Add dynamic fields if provided
+      if (ageBracket) userData.ageBracket = ageBracket;
+      if (birthdate) userData.birthdate = new Date(birthdate);
+      if (pronouns) userData.pronouns = pronouns;
+      if (phone) userData.phone = phone;
+      if (address) userData.address = address;
+      if (city) userData.city = city;
+      if (postalCode) userData.postalCode = postalCode;
+      if (homePhone) userData.homePhone = homePhone;
+      if (emergencyContactName) userData.emergencyContactName = emergencyContactName;
+      if (emergencyContactNumber) userData.emergencyContactNumber = emergencyContactNumber;
+      if (communicationPreferences) userData.communicationPreferences = communicationPreferences;
+      if (profilePictureUrl) userData.profilePictureUrl = profilePictureUrl;
+      if (allergies) userData.allergies = allergies;
+      if (medicalConcerns) userData.medicalConcerns = medicalConcerns;
+      if (preferredDays) userData.preferredDays = preferredDays;
+      if (preferredShifts) userData.preferredShifts = preferredShifts;
+      if (frequency) userData.frequency = frequency;
+      if (preferredPrograms) userData.preferredPrograms = preferredPrograms;
+      if (canCallIfShortHanded !== undefined) userData.canCallIfShortHanded = canCallIfShortHanded;
+      if (schoolWorkCommitment !== undefined) userData.schoolWorkCommitment = schoolWorkCommitment;
+      if (requiredHours) userData.requiredHours = requiredHours;
+      if (howDidYouHear) userData.howDidYouHear = howDidYouHear;
+      if (startDate) userData.startDate = new Date(startDate);
+      if (parentGuardianName) userData.parentGuardianName = parentGuardianName;
+      if (parentGuardianEmail) userData.parentGuardianEmail = parentGuardianEmail;
+      
       user = await prisma.user.create({
-        data: {
-          email,
-          firstName,
-          lastName,
-          password: hashedPassword,
-          organizationId: shift.organizationId,
-          role: 'VOLUNTEER',
-          status: 'APPROVED', // Auto-approve shift signups
-          resetToken,
-          resetTokenExpiry,
-          updatedAt: new Date()
-        }
+        data: userData
       });
       
       console.log('Created new user:', user.id);
@@ -5843,6 +5917,44 @@ app.post('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =
       
       if (existingSignup) {
         return res.status(400).json({ error: 'You are already signed up for this shift' });
+      }
+
+      // Update existing user with any new information
+      const updateData: any = {};
+      
+      // Only update fields that are provided and different from current values
+      if (ageBracket && user.ageBracket !== ageBracket) updateData.ageBracket = ageBracket;
+      if (birthdate && user.birthdate?.toISOString().split('T')[0] !== birthdate) updateData.birthdate = new Date(birthdate);
+      if (pronouns && user.pronouns !== pronouns) updateData.pronouns = pronouns;
+      if (phone && user.phone !== phone) updateData.phone = phone;
+      if (address && user.address !== address) updateData.address = address;
+      if (city && user.city !== city) updateData.city = city;
+      if (postalCode && user.postalCode !== postalCode) updateData.postalCode = postalCode;
+      if (homePhone && user.homePhone !== homePhone) updateData.homePhone = homePhone;
+      if (emergencyContactName && user.emergencyContactName !== emergencyContactName) updateData.emergencyContactName = emergencyContactName;
+      if (emergencyContactNumber && user.emergencyContactNumber !== emergencyContactNumber) updateData.emergencyContactNumber = emergencyContactNumber;
+      if (communicationPreferences && user.communicationPreferences !== communicationPreferences) updateData.communicationPreferences = communicationPreferences;
+      if (profilePictureUrl && user.profilePictureUrl !== profilePictureUrl) updateData.profilePictureUrl = profilePictureUrl;
+      if (allergies && user.allergies !== allergies) updateData.allergies = allergies;
+      if (medicalConcerns && user.medicalConcerns !== medicalConcerns) updateData.medicalConcerns = medicalConcerns;
+      if (preferredDays && user.preferredDays !== preferredDays) updateData.preferredDays = preferredDays;
+      if (preferredShifts && user.preferredShifts !== preferredShifts) updateData.preferredShifts = preferredShifts;
+      if (frequency && user.frequency !== frequency) updateData.frequency = frequency;
+      if (preferredPrograms && user.preferredPrograms !== preferredPrograms) updateData.preferredPrograms = preferredPrograms;
+      if (canCallIfShortHanded !== undefined && user.canCallIfShortHanded !== canCallIfShortHanded) updateData.canCallIfShortHanded = canCallIfShortHanded;
+      if (schoolWorkCommitment !== undefined && user.schoolWorkCommitment !== schoolWorkCommitment) updateData.schoolWorkCommitment = schoolWorkCommitment;
+      if (requiredHours && user.requiredHours !== requiredHours) updateData.requiredHours = requiredHours;
+      if (howDidYouHear && user.howDidYouHear !== howDidYouHear) updateData.howDidYouHear = howDidYouHear;
+      if (startDate && user.startDate?.toISOString().split('T')[0] !== startDate) updateData.startDate = new Date(startDate);
+      if (parentGuardianName && user.parentGuardianName !== parentGuardianName) updateData.parentGuardianName = parentGuardianName;
+      if (parentGuardianEmail && user.parentGuardianEmail !== parentGuardianEmail) updateData.parentGuardianEmail = parentGuardianEmail;
+
+      // Only update if there are changes
+      if (Object.keys(updateData).length > 0) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: updateData
+        });
       }
     }
     
@@ -6238,6 +6350,7 @@ app.put('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
         return res.status(400).json({ error: 'End time must be after start time' });
       }
 
+      // Store times in UTC in the database (frontend sends Halifax time, convert to UTC)
       updateData.startTime = start;
       updateData.endTime = end;
     }
@@ -6576,6 +6689,217 @@ app.get('/api/recurring-shifts', authenticateToken, async (req, res) => {
     res.json(shifts);
   } catch (err) {
     console.error('Error fetching shifts:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- Shift Registration Fields API Endpoints ---
+
+// Get shift details for edit page
+app.get('/api/recurring-shifts/:id/edit', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+
+    // Check if shift exists and belongs to user's organization
+    const shift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      },
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    res.json(shift);
+  } catch (err) {
+    console.error('Error fetching shift for edit:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get registration fields for a shift
+app.get('/api/recurring-shifts/:id/registration-fields', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+
+    // Check if shift exists and belongs to user's organization
+    const shift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Get registration fields for this shift
+    let registrationFields = await prisma.shiftRegistrationFields.findUnique({
+      where: { recurringShiftId: shiftId }
+    });
+
+    // If no registration fields exist, create default ones
+    if (!registrationFields) {
+      registrationFields = await prisma.shiftRegistrationFields.create({
+        data: {
+          recurringShiftId: shiftId,
+          // Default: only basic fields required
+          requireFirstName: true,
+          requireLastName: true,
+          requireEmail: true,
+          // All other fields default to false
+        }
+      });
+    }
+
+    res.json(registrationFields);
+  } catch (err) {
+    console.error('Error fetching registration fields:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update registration fields for a shift
+app.put('/api/recurring-shifts/:id/registration-fields', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const registrationFieldsData = req.body;
+
+    // Check if shift exists and belongs to user's organization
+    const shift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Update or create registration fields
+    const registrationFields = await prisma.shiftRegistrationFields.upsert({
+      where: { recurringShiftId: shiftId },
+      update: registrationFieldsData,
+      create: {
+        recurringShiftId: shiftId,
+        ...registrationFieldsData
+      }
+    });
+
+    res.json(registrationFields);
+  } catch (err) {
+    console.error('Error updating registration fields:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Switch shift type (recurring to one-time or vice versa)
+app.put('/api/recurring-shifts/:id/switch-type', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    const shiftId = parseInt(req.params.id);
+    const { newType, date, startTime, endTime, dayOfWeek } = req.body;
+
+    // Check if shift exists and belongs to user's organization
+    const shift = await prisma.recurringShift.findFirst({
+      where: {
+        id: shiftId,
+        organizationId: user.organizationId
+      }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    const updateData: any = {};
+
+    if (newType === 'one-time') {
+      // Switching to one-time shift
+      if (!date || !startTime || !endTime) {
+        return res.status(400).json({ error: 'Date, start time, and end time are required for one-time shifts' });
+      }
+
+      updateData.isRecurring = false;
+      updateData.dayOfWeek = null;
+      updateData.startTime = new Date(`${date}T${startTime}`);
+      updateData.endTime = new Date(`${date}T${endTime}`);
+
+      // Create entry in Shift table for the specific date
+      await prisma.shift.create({
+        data: {
+          name: shift.name,
+          shiftCategoryId: shift.shiftCategoryId,
+          startTime: updateData.startTime,
+          endTime: updateData.endTime,
+          location: shift.location,
+          slots: shift.slots,
+          organizationId: shift.organizationId
+        }
+      });
+
+    } else if (newType === 'recurring') {
+      // Switching to recurring shift
+      if (dayOfWeek === undefined || !startTime || !endTime) {
+        return res.status(400).json({ error: 'Day of week, start time, and end time are required for recurring shifts' });
+      }
+
+      updateData.isRecurring = true;
+      updateData.dayOfWeek = dayOfWeek;
+      
+      // Use a base date for recurring shifts
+      const baseDate = '1969-06-10';
+      updateData.startTime = new Date(`${baseDate}T${startTime}`);
+      updateData.endTime = new Date(`${baseDate}T${endTime}`);
+
+      // Remove any existing Shift table entries for this recurring shift
+      await prisma.shift.deleteMany({
+        where: {
+          name: shift.name,
+          shiftCategoryId: shift.shiftCategoryId,
+          organizationId: shift.organizationId
+        }
+      });
+    }
+
+    // Update the recurring shift
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: shiftId },
+      data: updateData,
+      include: {
+        ShiftCategory: true
+      }
+    });
+
+    res.json(updatedShift);
+  } catch (err) {
+    console.error('Error switching shift type:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

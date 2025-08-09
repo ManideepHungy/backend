@@ -39,13 +39,29 @@ const getEndpoint = (): string => {
 // Configure AWS SDK for Cloudflare R2
 export const createS3Client = () => {
   try {
+    const endpoint = getEndpoint();
+    const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY;
+    
+    console.log('Creating S3 client with config:', {
+      endpoint,
+      hasAccessKey: !!accessKeyId,
+      hasSecretKey: !!secretAccessKey,
+      region: 'auto'
+    });
+    
     return new AWS.S3({
-      endpoint: getEndpoint(),
-      accessKeyId: process.env.CLOUDFLARE_R2_ACCESS_KEY_ID,
-      secretAccessKey: process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY,
+      endpoint: endpoint,
+      accessKeyId: accessKeyId,
+      secretAccessKey: secretAccessKey,
       region: 'auto',
       signatureVersion: 'v4',
       s3ForcePathStyle: true, // Required for R2
+      maxRetries: 3,
+      httpOptions: {
+        timeout: 30000, // 30 seconds
+        connectTimeout: 10000 // 10 seconds
+      }
     });
   } catch (error) {
     console.error('Error creating S3 client:', error);
@@ -128,6 +144,29 @@ export const uploadToR2 = async (
     // Create S3 client
     const s3 = createS3Client();
 
+    // Test bucket access before uploading
+    try {
+      console.log('Testing bucket access...');
+      await s3.headBucket({ Bucket: bucketName }).promise();
+      console.log('Bucket access confirmed');
+    } catch (bucketError) {
+      console.error('Bucket access test failed:', bucketError);
+      if (bucketError instanceof Error) {
+        if (bucketError.message.includes('AccessDenied') || bucketError.message.includes('403')) {
+          throw new Error('Permission denied. Please check R2 bucket permissions and credentials.');
+        } else if (bucketError.message.includes('NoSuchBucket') || bucketError.message.includes('404')) {
+          throw new Error('Storage bucket not found. Please contact administrator.');
+        } else if (bucketError.message.includes('InvalidAccessKeyId')) {
+          throw new Error('Invalid R2 access key. Please check your credentials.');
+        } else if (bucketError.message.includes('SignatureDoesNotMatch')) {
+          throw new Error('Invalid R2 secret key. Please check your credentials.');
+        } else {
+          throw new Error(`Bucket access failed: ${bucketError.message}`);
+        }
+      }
+      throw bucketError;
+    }
+
     // Generate unique filename
     const timestamp = Date.now();
     const extension = path.extname(file.originalname);
@@ -144,7 +183,13 @@ export const uploadToR2 = async (
       // We need to make sure the bucket has public access configured
     };
 
-    console.log('Attempting upload to R2...');
+    console.log('Attempting upload to R2 with params:', {
+      Bucket: bucketName,
+      Key: fileName,
+      ContentType: file.mimetype,
+      BodyLength: file.buffer?.length
+    });
+
     const result = await s3.upload(uploadParams).promise();
     console.log(`Successfully uploaded file to R2: ${fileName}`);
     console.log(`File URL generated: ${result.Location}`);
@@ -178,9 +223,34 @@ export const uploadToR2 = async (
       message: error instanceof Error ? error.message : 'Unknown error',
       stack: error instanceof Error ? error.stack : undefined,
       code: (error as any)?.code,
-      statusCode: (error as any)?.statusCode
+      statusCode: (error as any)?.statusCode,
+      requestId: (error as any)?.requestId,
+      cfId: (error as any)?.cfId
     });
-    throw new Error(`Failed to upload file to cloud storage: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    
+    // Provide more specific error messages
+    let errorMessage = 'Failed to upload file to cloud storage';
+    if (error instanceof Error) {
+      if (error.message.includes('not configured')) {
+        errorMessage = 'File upload service not configured. Please contact administrator.';
+      } else if (error.message.includes('network') || error.message.includes('connection')) {
+        errorMessage = 'Network error. Please check your connection and try again.';
+      } else if (error.message.includes('permission') || error.message.includes('access') || error.message.includes('AccessDenied')) {
+        errorMessage = 'Permission denied. Please check R2 bucket permissions and credentials.';
+      } else if (error.message.includes('bucket') || error.message.includes('not found') || error.message.includes('NoSuchBucket')) {
+        errorMessage = 'Storage bucket not found. Please contact administrator.';
+      } else if (error.message.includes('credentials') || error.message.includes('authentication') || error.message.includes('InvalidAccessKeyId')) {
+        errorMessage = 'Authentication failed. Please check R2 credentials.';
+      } else if (error.message.includes('InvalidRequest') || error.message.includes('MalformedXML')) {
+        errorMessage = 'Invalid request format. Please try again.';
+      } else if (error.message.includes('SignatureDoesNotMatch')) {
+        errorMessage = 'Invalid R2 secret key. Please check your credentials.';
+      } else {
+        errorMessage = error.message;
+      }
+    }
+    
+    throw new Error(errorMessage);
   }
 };
 

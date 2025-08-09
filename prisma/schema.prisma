@@ -82,6 +82,7 @@ model RecurringShift {
   Organization    Organization  @relation(fields: [organizationId], references: [id])
   ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
   registrationFields ShiftRegistrationFields?
+  Shift           Shift[]
 }
 
 model Shift {
@@ -94,9 +95,11 @@ model Shift {
   slots           Int
   organizationId  Int
   isActive        Boolean       @default(true)
+  recurringShiftId Int?         // Link to RecurringShift table
   Donation        Donation[]
   Organization    Organization  @relation(fields: [organizationId], references: [id])
   ShiftCategory   ShiftCategory @relation(fields: [shiftCategoryId], references: [id])
+  RecurringShift  RecurringShift? @relation(fields: [recurringShiftId], references: [id], onDelete: SetNull)
   ShiftSignup     ShiftSignup[]
 }
 

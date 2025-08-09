@@ -2600,7 +2600,8 @@ app.post('/api/users/upload-agreement', authenticateToken, upload.single('agreem
     console.log('Upload agreement request received:', {
       organizationId,
       userId,
-      hasFile: !!req.file
+      hasFile: !!req.file,
+      headers: req.headers
     });
     
     if (!req.file) {
@@ -2611,8 +2612,22 @@ app.post('/api/users/upload-agreement', authenticateToken, upload.single('agreem
     console.log('File details:', {
       originalname: req.file.originalname,
       mimetype: req.file.mimetype,
-      size: req.file.size
+      size: req.file.size,
+      bufferLength: req.file.buffer?.length
     });
+
+    // Check if R2 is properly configured
+    if (!process.env.CLOUDFLARE_R2_ENDPOINT || !process.env.CLOUDFLARE_R2_ACCESS_KEY_ID || !process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY) {
+      console.error('R2 configuration missing:', {
+        endpoint: !!process.env.CLOUDFLARE_R2_ENDPOINT,
+        accessKey: !!process.env.CLOUDFLARE_R2_ACCESS_KEY_ID,
+        secretKey: !!process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY
+      });
+      return res.status(500).json({ 
+        error: 'File upload service not configured. Please contact administrator.',
+        details: 'Cloudflare R2 not configured'
+      });
+    }
 
     // Upload to R2 useragreements folder
     console.log('Attempting to upload to useragreements folder...');
@@ -2634,8 +2649,31 @@ app.post('/api/users/upload-agreement', authenticateToken, upload.single('agreem
       code: (error as any)?.code,
       statusCode: (error as any)?.statusCode
     });
+    
+    // Provide more specific error messages
+    let errorMessage = 'Failed to upload agreement document';
+    if (error instanceof Error) {
+      if (error.message.includes('not configured')) {
+        errorMessage = 'File upload service not configured. Please contact administrator.';
+      } else if (error.message.includes('network') || error.message.includes('connection')) {
+        errorMessage = 'Network error. Please check your connection and try again.';
+      } else if (error.message.includes('permission') || error.message.includes('access')) {
+        errorMessage = 'Permission denied. Please contact administrator.';
+      } else if (error.message.includes('Invalid file type')) {
+        errorMessage = 'Invalid file type. Only PDF, Word, text, and image files are allowed.';
+      } else if (error.message.includes('file too large')) {
+        errorMessage = 'File too large. Maximum file size is 10MB.';
+      } else if (error.message.includes('bucket') || error.message.includes('not found')) {
+        errorMessage = 'Storage bucket not found. Please contact administrator.';
+      } else if (error.message.includes('credentials') || error.message.includes('authentication')) {
+        errorMessage = 'Authentication failed. Please contact administrator.';
+      } else {
+        errorMessage = error.message;
+      }
+    }
+    
     res.status(500).json({ 
-      error: 'Failed to upload agreement document',
+      error: errorMessage,
       details: error instanceof Error ? error.message : 'Unknown error'
     });
   }
@@ -3592,7 +3630,8 @@ app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
           location,
           slots,
           organizationId,
-          isActive: true
+          isActive: true,
+          recurringShiftId: shift.id // Link to the RecurringShift
         }
       });
       
@@ -3613,7 +3652,11 @@ app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
 // Update recurring shift
 app.put('/api/recurring-shifts/:id', authenticateToken, async (req: any, res) => {
   try {
-    const organizationId = req.user.organizationId;
+    const organizationId = req.user?.organizationId;
+    if (!organizationId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
     const id = parseInt(req.params.id);
     const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots, isActive } = req.body;
 
@@ -3639,7 +3682,7 @@ app.put('/api/recurring-shifts/:id', authenticateToken, async (req: any, res) =>
     if (shiftCategoryId !== undefined) updateData.shiftCategoryId = parseInt(shiftCategoryId);
 
     // Handle time updates based on shift type
-    if (startTime && endTime) {
+    if (startTime !== undefined && endTime !== undefined) {
       const start = new Date(startTime);
       const end = new Date(endTime);
       
@@ -3755,7 +3798,7 @@ app.post('/api/shifts', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    const { name, shiftCategoryId, startTime, endTime, location, slots } = req.body;
+    const { name, shiftCategoryId, startTime, endTime, location, slots, recurringShiftId, isActive } = req.body;
     if (!name || !shiftCategoryId || !startTime || !endTime || !location || !slots) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -3769,6 +3812,17 @@ app.post('/api/shifts', authenticateToken, async (req, res) => {
     if (!category) {
       return res.status(404).json({ error: 'Shift category not found' });
     }
+    
+    // If recurringShiftId is provided, check if it exists and belongs to organization
+    if (recurringShiftId) {
+      const recurringShift = await prisma.recurringShift.findFirst({
+        where: { id: recurringShiftId, organizationId }
+      });
+      if (!recurringShift) {
+        return res.status(404).json({ error: 'Recurring shift not found' });
+      }
+    }
+    
     const shift = await prisma.shift.create({
       data: {
         name,
@@ -3777,7 +3831,9 @@ app.post('/api/shifts', authenticateToken, async (req, res) => {
         endTime: new Date(endTime),
         location,
         slots,
-        organizationId
+        organizationId,
+        recurringShiftId: recurringShiftId || null,
+        isActive: isActive !== undefined ? isActive : true // Use provided isActive or default to true
       },
       include: { ShiftCategory: true }
     });
@@ -3902,7 +3958,8 @@ app.post('/api/schedule-shift', authenticateToken, async (req: any, res) => {
           endTime: end,
           location: rec.location,
           slots: rec.slots,
-          organizationId
+          organizationId,
+          recurringShiftId: rec.id // Link to the RecurringShift
         }
       });
     }
@@ -6418,7 +6475,8 @@ app.post('/api/shifts/one-time', authenticateToken, async (req, res) => {
         location,
         slots: parseInt(slots),
         organizationId: user.organizationId,
-        isActive
+        isActive,
+        recurringShiftId: oneTimeShift.id // Link to the RecurringShift
       }
     });
 
@@ -6461,15 +6519,17 @@ app.get('/api/shifts', authenticateToken, async (req, res) => {
 
     console.log('whereClause', whereClause);
 
-    const shifts = await prisma.recurringShift.findMany({
+    const shifts = await prisma.shift.findMany({
       where: whereClause,
       include: {
-        ShiftCategory: true
+        ShiftCategory: true,
+        ShiftSignup: {
+          include: {
+            User: true
+          }
+        }
       },
-      orderBy: [
-        { isRecurring: 'desc' }, // recurring first
-        { startTime: 'asc' }
-      ]
+      orderBy: { startTime: 'asc' }
     });
 
     res.json(shifts);
@@ -6482,19 +6542,19 @@ app.get('/api/shifts', authenticateToken, async (req, res) => {
 // Update recurring shift (both recurring and one-time)
 app.put('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
   try {
-    const user = req.user;
-    if (!user) {
+    const organizationId = req.user?.organizationId;
+    if (!organizationId) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
-
-    const shiftId = parseInt(req.params.id);
-    const { name, startTime, endTime, shiftCategoryId, location, slots, isActive, dayOfWeek } = req.body;
+    
+    const id = parseInt(req.params.id);
+    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots, isActive } = req.body;
 
     // Check if shift exists and belongs to user's organization
     const existingShift = await prisma.recurringShift.findFirst({
       where: {
-        id: shiftId,
-        organizationId: user.organizationId
+        id: id,
+        organizationId: organizationId
       }
     });
 
@@ -6512,7 +6572,7 @@ app.put('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
     if (shiftCategoryId !== undefined) updateData.shiftCategoryId = parseInt(shiftCategoryId);
 
     // Handle time updates based on shift type
-    if (startTime && endTime) {
+    if (startTime !== undefined && endTime !== undefined) {
       const start = new Date(startTime);
       const end = new Date(endTime);
       
@@ -6537,7 +6597,7 @@ app.put('/api/recurring-shifts/:id', authenticateToken, async (req, res) => {
     }
 
     const updatedShift = await prisma.recurringShift.update({
-      where: { id: shiftId },
+      where: { id: id },
       data: updateData,
       include: {
         ShiftCategory: true
@@ -6646,7 +6706,7 @@ app.put('/api/shifts/:id/toggle-active', authenticateToken, async (req, res) => 
     }
 
     // Check if shift exists and belongs to user's organization
-    const existingShift = await prisma.recurringShift.findFirst({
+    const existingShift = await prisma.shift.findFirst({
       where: {
         id: shiftId,
         organizationId: user.organizationId
@@ -6657,7 +6717,7 @@ app.put('/api/shifts/:id/toggle-active', authenticateToken, async (req, res) => 
       return res.status(404).json({ error: 'Shift not found' });
     }
 
-    const updatedShift = await prisma.recurringShift.update({
+    const updatedShift = await prisma.shift.update({
       where: { id: shiftId },
       data: { isActive },
       include: {

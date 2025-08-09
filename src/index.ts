@@ -2218,6 +2218,39 @@ app.get('/api/users/:id', authenticateToken, async (req, res) => {
         lastName: true,
         role: true,
         phone: true,
+        status: true,
+        createdAt: true,
+        approvedAt: true,
+        approvedBy: true,
+        deniedAt: true,
+        deniedBy: true,
+        denialReason: true,
+        // Additional profile fields
+        ageBracket: true,
+        birthdate: true,
+        pronouns: true,
+        address: true,
+        city: true,
+        postalCode: true,
+        homePhone: true,
+        emergencyContactName: true,
+        emergencyContactNumber: true,
+        communicationPreferences: true,
+        profilePictureUrl: true,
+        allergies: true,
+        medicalConcerns: true,
+        preferredDays: true,
+        preferredShifts: true,
+        frequency: true,
+        preferredPrograms: true,
+        canCallIfShortHanded: true,
+        schoolWorkCommitment: true,
+        requiredHours: true,
+        howDidYouHear: true,
+        startDate: true,
+        parentGuardianName: true,
+        parentGuardianEmail: true,
+        registrationType: true,
         organization: {
           select: {
             name: true
@@ -2226,12 +2259,69 @@ app.get('/api/users/:id', authenticateToken, async (req, res) => {
       }
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
+    
+    // Get approval/denial information
+    let approvedByName = null;
+    let deniedByName = null;
+    
+    if (user.approvedBy) {
+      const approver = await prisma.user.findUnique({
+        where: { id: user.approvedBy },
+        select: { firstName: true, lastName: true }
+      });
+      approvedByName = approver ? `${approver.firstName} ${approver.lastName}` : null;
+    }
+    
+    if (user.deniedBy) {
+      const denier = await prisma.user.findUnique({
+        where: { id: user.deniedBy },
+        select: { firstName: true, lastName: true }
+      });
+      deniedByName = denier ? `${denier.firstName} ${denier.lastName}` : null;
+    }
+    
     res.json({
       id: user.id,
-      name: user.firstName + ' ' + user.lastName,
+      firstName: user.firstName,
+      lastName: user.lastName,
       email: user.email,
       role: user.role,
       phone: user.phone,
+      status: user.status,
+      createdAt: user.createdAt,
+      approvedAt: user.approvedAt,
+      approvedBy: user.approvedBy,
+      approvedByName,
+      deniedAt: user.deniedAt,
+      deniedBy: user.deniedBy,
+      deniedByName,
+      denialReason: user.denialReason,
+      // Additional profile fields
+      ageBracket: user.ageBracket,
+      birthdate: user.birthdate,
+      pronouns: user.pronouns,
+      address: user.address,
+      city: user.city,
+      postalCode: user.postalCode,
+      homePhone: user.homePhone,
+      emergencyContactName: user.emergencyContactName,
+      emergencyContactNumber: user.emergencyContactNumber,
+      communicationPreferences: user.communicationPreferences,
+      profilePictureUrl: user.profilePictureUrl,
+      allergies: user.allergies,
+      medicalConcerns: user.medicalConcerns,
+      preferredDays: user.preferredDays,
+      preferredShifts: user.preferredShifts,
+      frequency: user.frequency,
+      preferredPrograms: user.preferredPrograms,
+      canCallIfShortHanded: user.canCallIfShortHanded,
+      schoolWorkCommitment: user.schoolWorkCommitment,
+      requiredHours: user.requiredHours,
+      howDidYouHear: user.howDidYouHear,
+      startDate: user.startDate,
+      parentGuardianName: user.parentGuardianName,
+      parentGuardianEmail: user.parentGuardianEmail,
+      registrationType: user.registrationType,
       organizationName: user.organization?.name || 'Unknown Organization'
     });
   } catch (err) {
@@ -2244,7 +2334,40 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
   const reqAny = req as any;
   try {
     const organizationId = reqAny.user.organizationId;
-    let { firstName, lastName, name, email, phone, role, password } = req.body;
+    let { 
+      firstName, 
+      lastName, 
+      name, 
+      email, 
+      phone, 
+      role, 
+      password,
+      // Additional user profile fields
+      ageBracket,
+      birthdate,
+      pronouns,
+      address,
+      city,
+      postalCode,
+      homePhone,
+      emergencyContactName,
+      emergencyContactNumber,
+      communicationPreferences,
+      allergies,
+      medicalConcerns,
+      preferredDays,
+      preferredShifts,
+      frequency,
+      preferredPrograms,
+      canCallIfShortHanded,
+      schoolWorkCommitment,
+      requiredHours,
+      howDidYouHear,
+      startDate,
+      parentGuardianName,
+      parentGuardianEmail,
+      registrationType
+    } = req.body;
 
     // If firstName/lastName not provided, try to split from name
     if ((!firstName || !lastName) && name) {
@@ -2270,7 +2393,32 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
       email,
       phone,
       role,
-      updatedAt: new Date()
+      updatedAt: new Date(),
+      // Additional user profile fields
+      ageBracket: ageBracket || null,
+      birthdate: birthdate ? new Date(birthdate) : null,
+      pronouns: pronouns || null,
+      address: address || null,
+      city: city || null,
+      postalCode: postalCode || null,
+      homePhone: homePhone || null,
+      emergencyContactName: emergencyContactName || null,
+      emergencyContactNumber: emergencyContactNumber || null,
+      communicationPreferences: communicationPreferences || null,
+      allergies: allergies || null,
+      medicalConcerns: medicalConcerns || null,
+      preferredDays: preferredDays || null,
+      preferredShifts: preferredShifts || null,
+      frequency: frequency || null,
+      preferredPrograms: preferredPrograms || null,
+      canCallIfShortHanded: canCallIfShortHanded !== undefined ? canCallIfShortHanded : null,
+      schoolWorkCommitment: schoolWorkCommitment || null,
+      requiredHours: requiredHours || null,
+      howDidYouHear: howDidYouHear || null,
+      startDate: startDate ? new Date(startDate) : null,
+      parentGuardianName: parentGuardianName || null,
+      parentGuardianEmail: parentGuardianEmail || null,
+      registrationType: registrationType || 'ADULT'
     };
 
     // If password is provided, hash it
@@ -3376,15 +3524,14 @@ app.get('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
 app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
   try {
     const organizationId = req.user.organizationId;
-    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots } = req.body;
+    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots, isRecurring = true } = req.body;
 
     // Validate required fields
-    if (!name || dayOfWeek === undefined || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
+    if (!name || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
       return res.status(400).json({ 
         error: 'Missing required fields',
         details: {
           name: !name,
-          dayOfWeek: dayOfWeek === undefined,
           startTime: !startTime,
           endTime: !endTime,
           shiftCategoryId: !shiftCategoryId,
@@ -3394,9 +3541,9 @@ app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
       });
     }
 
-    // Validate day of week
-    if (dayOfWeek < 0 || dayOfWeek > 6) {
-      return res.status(400).json({ error: 'Day of week must be between 0 and 6' });
+    // Validate day of week for recurring shifts
+    if (isRecurring && (dayOfWeek === undefined || dayOfWeek < 0 || dayOfWeek > 6)) {
+      return res.status(400).json({ error: 'Day of week must be between 0 and 6 for recurring shifts' });
     }
 
     // Validate slots
@@ -3416,27 +3563,50 @@ app.post('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
       return res.status(404).json({ error: 'Shift category not found' });
     }
 
-    // Create recurring shift with Halifax timezone handling
+    // Create shift in RecurringShift table
     const shift = await prisma.recurringShift.create({
       data: {
         name,
-        dayOfWeek,
+        dayOfWeek: isRecurring ? dayOfWeek : null, // null for one-time shifts
         startTime: new Date(startTime), // This will be stored as UTC but represents Halifax time
         endTime: new Date(endTime),     // This will be stored as UTC but represents Halifax time
         shiftCategoryId,
         location,
         slots,
-        organizationId
+        organizationId,
+        isRecurring // true for recurring, false for one-time
       },
       include: {
         ShiftCategory: true
       }
     });
 
-    res.json(shift);
+    // If it's a one-time shift, also create entry in Shift table for public signup functionality
+    if (!isRecurring) {
+      const shiftEntry = await prisma.shift.create({
+        data: {
+          name,
+          shiftCategoryId,
+          startTime: new Date(startTime),
+          endTime: new Date(endTime),
+          location,
+          slots,
+          organizationId,
+          isActive: true
+        }
+      });
+      
+      // Return both IDs for reference
+      res.json({
+        ...shift,
+        shiftId: shiftEntry.id
+      });
+    } else {
+      res.json(shift);
+    }
   } catch (err) {
-    console.error('Error creating recurring shift:', err);
-    res.status(500).json({ error: 'Failed to create recurring shift' });
+    console.error('Error creating shift:', err);
+    res.status(500).json({ error: 'Failed to create shift' });
   }
 });
 
@@ -3445,79 +3615,66 @@ app.put('/api/recurring-shifts/:id', authenticateToken, async (req: any, res) =>
   try {
     const organizationId = req.user.organizationId;
     const id = parseInt(req.params.id);
-    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots } = req.body;
+    const { name, dayOfWeek, startTime, endTime, shiftCategoryId, location, slots, isActive } = req.body;
 
-    // Validate required fields
-    if (!name || dayOfWeek === undefined || !startTime || !endTime || !shiftCategoryId || !location || !slots) {
-      return res.status(400).json({ 
-        error: 'Missing required fields',
-        details: {
-          name: !name,
-          dayOfWeek: dayOfWeek === undefined,
-          startTime: !startTime,
-          endTime: !endTime,
-          shiftCategoryId: !shiftCategoryId,
-          location: !location,
-          slots: !slots
-        }
-      });
-    }
-
-    // Validate day of week
-    if (dayOfWeek < 0 || dayOfWeek > 6) {
-      return res.status(400).json({ error: 'Day of week must be between 0 and 6' });
-    }
-
-    // Validate slots
-    if (slots < 1) {
-      return res.status(400).json({ error: 'Slots must be at least 1' });
-    }
-
-    // Check if shift exists and belongs to organization
-    const existing = await prisma.recurringShift.findFirst({
+    // Check if shift exists and belongs to user's organization
+    const existingShift = await prisma.recurringShift.findFirst({
       where: {
-        id,
-        organizationId
+        id: id,
+        organizationId: organizationId
       }
     });
 
-    if (!existing) {
-      return res.status(404).json({ error: 'Recurring shift not found' });
+    if (!existingShift) {
+      return res.status(404).json({ error: 'Shift not found' });
     }
 
-    // Check if category exists and belongs to organization
-    const category = await prisma.shiftCategory.findFirst({
-      where: {
-        id: shiftCategoryId,
-        organizationId
+    // Prepare update data
+    const updateData: any = {};
+
+    if (name !== undefined) updateData.name = name;
+    if (location !== undefined) updateData.location = location;
+    if (slots !== undefined) updateData.slots = parseInt(slots);
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (shiftCategoryId !== undefined) updateData.shiftCategoryId = parseInt(shiftCategoryId);
+
+    // Handle time updates based on shift type
+    if (startTime && endTime) {
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
       }
-    });
 
-    if (!category) {
-      return res.status(404).json({ error: 'Shift category not found' });
+      if (start >= end) {
+        return res.status(400).json({ error: 'End time must be after start time' });
+      }
+
+      // Store times in UTC in the database (frontend sends Halifax time, convert to UTC)
+      updateData.startTime = start;
+      updateData.endTime = end;
     }
 
-    // Update recurring shift
-    const shift = await prisma.recurringShift.update({
-      where: { id },
-      data: {
-        name,
-        dayOfWeek,
-        startTime: new Date(startTime),
-        endTime: new Date(endTime),
-        shiftCategoryId,
-        location,
-        slots
-      },
+    // Handle dayOfWeek for recurring shifts
+    if (existingShift.isRecurring && dayOfWeek !== undefined) {
+      updateData.dayOfWeek = parseInt(dayOfWeek);
+    } else if (!existingShift.isRecurring) {
+      updateData.dayOfWeek = null;
+    }
+
+    const updatedShift = await prisma.recurringShift.update({
+      where: { id: id },
+      data: updateData,
       include: {
         ShiftCategory: true
       }
     });
 
-    res.json(shift);
+    res.json(updatedShift);
   } catch (err) {
-    console.error('Error updating recurring shift:', err);
-    res.status(500).json({ error: 'Failed to update recurring shift' });
+    console.error('Error updating shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -3530,23 +3687,23 @@ app.delete('/api/recurring-shifts/:id', authenticateToken, async (req: any, res)
     // Check if shift exists and belongs to organization
     const existing = await prisma.recurringShift.findFirst({
       where: {
-        id,
-        organizationId
+        id: id,
+        organizationId: organizationId
       }
     });
 
     if (!existing) {
-      return res.status(404).json({ error: 'Recurring shift not found' });
+      return res.status(404).json({ error: 'Shift not found' });
     }
 
     await prisma.recurringShift.delete({
-      where: { id }
+      where: { id: id }
     });
 
     res.json({ success: true });
   } catch (err) {
-    console.error('Error deleting recurring shift:', err);
-    res.status(500).json({ error: 'Failed to delete recurring shift' });
+    console.error('Error deleting shift:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -6251,7 +6408,24 @@ app.post('/api/shifts/one-time', authenticateToken, async (req, res) => {
       }
     });
 
-    res.status(201).json(oneTimeShift);
+    // Also create entry in Shift table for public signup functionality
+    const shiftEntry = await prisma.shift.create({
+      data: {
+        name,
+        shiftCategoryId,
+        startTime: start,
+        endTime: end,
+        location,
+        slots: parseInt(slots),
+        organizationId: user.organizationId,
+        isActive
+      }
+    });
+
+    res.status(201).json({
+      ...oneTimeShift,
+      shiftId: shiftEntry.id // Include the Shift table ID for reference
+    });
   } catch (err) {
     console.error('Error creating one-time shift:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -6811,95 +6985,6 @@ app.put('/api/recurring-shifts/:id/registration-fields', authenticateToken, asyn
     res.json(registrationFields);
   } catch (err) {
     console.error('Error updating registration fields:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Switch shift type (recurring to one-time or vice versa)
-app.put('/api/recurring-shifts/:id/switch-type', authenticateToken, async (req, res) => {
-  try {
-    const user = req.user;
-    if (!user) {
-      return res.status(401).json({ error: 'User not authenticated' });
-    }
-
-    const shiftId = parseInt(req.params.id);
-    const { newType, date, startTime, endTime, dayOfWeek } = req.body;
-
-    // Check if shift exists and belongs to user's organization
-    const shift = await prisma.recurringShift.findFirst({
-      where: {
-        id: shiftId,
-        organizationId: user.organizationId
-      }
-    });
-
-    if (!shift) {
-      return res.status(404).json({ error: 'Shift not found' });
-    }
-
-    const updateData: any = {};
-
-    if (newType === 'one-time') {
-      // Switching to one-time shift
-      if (!date || !startTime || !endTime) {
-        return res.status(400).json({ error: 'Date, start time, and end time are required for one-time shifts' });
-      }
-
-      updateData.isRecurring = false;
-      updateData.dayOfWeek = null;
-      updateData.startTime = new Date(`${date}T${startTime}`);
-      updateData.endTime = new Date(`${date}T${endTime}`);
-
-      // Create entry in Shift table for the specific date
-      await prisma.shift.create({
-        data: {
-          name: shift.name,
-          shiftCategoryId: shift.shiftCategoryId,
-          startTime: updateData.startTime,
-          endTime: updateData.endTime,
-          location: shift.location,
-          slots: shift.slots,
-          organizationId: shift.organizationId
-        }
-      });
-
-    } else if (newType === 'recurring') {
-      // Switching to recurring shift
-      if (dayOfWeek === undefined || !startTime || !endTime) {
-        return res.status(400).json({ error: 'Day of week, start time, and end time are required for recurring shifts' });
-      }
-
-      updateData.isRecurring = true;
-      updateData.dayOfWeek = dayOfWeek;
-      
-      // Use a base date for recurring shifts
-      const baseDate = '1969-06-10';
-      updateData.startTime = new Date(`${baseDate}T${startTime}`);
-      updateData.endTime = new Date(`${baseDate}T${endTime}`);
-
-      // Remove any existing Shift table entries for this recurring shift
-      await prisma.shift.deleteMany({
-        where: {
-          name: shift.name,
-          shiftCategoryId: shift.shiftCategoryId,
-          organizationId: shift.organizationId
-        }
-      });
-    }
-
-    // Update the recurring shift
-    const updatedShift = await prisma.recurringShift.update({
-      where: { id: shiftId },
-      data: updateData,
-      include: {
-        ShiftCategory: true
-      }
-    });
-
-    res.json(updatedShift);
-  } catch (err) {
-    console.error('Error switching shift type:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

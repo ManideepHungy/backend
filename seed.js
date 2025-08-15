@@ -680,6 +680,59 @@ async function main() {
 
   console.log('✅ Weighing categories created');
 
+  // Create Modules for role-based permissions
+  console.log('Creating modules...');
+  const donationManagementModule = await prisma.module.create({
+    data: {
+      name: 'Donation Management',
+      description: 'Manage donations, categories, and inventory'
+    }
+  });
+
+  const volunteerMealCountingModule = await prisma.module.create({
+    data: {
+      name: 'Volunteer Meal Counting',
+      description: 'Count meals served by volunteers during shifts'
+    }
+  });
+
+  const volunteerShiftManagementModule = await prisma.module.create({
+    data: {
+      name: 'Volunteer Shift Management',
+      description: 'Manage volunteer shifts and signups'
+    }
+  });
+
+  const adminMealCountingModule = await prisma.module.create({
+    data: {
+      name: 'Admin Meal Counting',
+      description: 'Administrative meal counting and reporting'
+    }
+  });
+
+  const groupShiftsManagementModule = await prisma.module.create({
+    data: {
+      name: 'Group Shifts Management',
+      description: 'Manage group shifts and recurring schedules'
+    }
+  });
+
+  const dashboardModule = await prisma.module.create({
+    data: {
+      name: 'Dashboard',
+      description: 'Main dashboard access'
+    }
+  });
+
+  const profileModule = await prisma.module.create({
+    data: {
+      name: 'Profile',
+      description: 'User profile management'
+    }
+  });
+
+  console.log('✅ Modules created');
+
   console.log('🎉 Database seeding completed successfully!');
   console.log('\n📊 Sample Data Summary:');
   console.log(`- Organizations: 2`);
@@ -694,6 +747,7 @@ async function main() {
   console.log(`- Donations: 4`);
   console.log(`- Donation Items: 8`);
   console.log(`- Weighing Categories: 6`);
+  console.log(`- Modules: 7 (Donation Management, Volunteer Meal Counting, Volunteer Shift Management, Admin Meal Counting, Group Shifts Management, Dashboard, Profile)`);
   console.log('\n🔑 Login Credentials:');
   console.log('Email: admin@communityfoodbank.org');
   console.log('Password: password123');

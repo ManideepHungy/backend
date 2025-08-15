@@ -181,7 +181,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Get incoming stats
+    // Get incoming stats
 app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
   try {
     const { month, year } = req.query;
@@ -227,16 +227,14 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
     // Group donations by date and donor, using donation.summary as total weight
     const groupedData = donations.reduce((acc: any, donation: any) => {
       const dt = new Date(donation.createdAt);
-      const parts = dt.toLocaleString('en-US', {
+      // Get the date in Halifax timezone without the +1 day adjustment
+      // Since we've fixed the timezone handling, we can use the correct date
+      const date = dt.toLocaleDateString('en-CA', {
         timeZone: 'America/Halifax',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
-      }).split('/');
-      // Add one day to match database data
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
+      }).split('/').reverse().join('-');
       const donorName = donation.Donor.name;
       const totalWeight = donation.summary;
 
@@ -354,16 +352,14 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
     // Group donations by date and donor, using donation.summary as total weight
     const groupedData = donations.reduce((acc: any, donation: any) => {
       const dt = new Date(donation.createdAt);
-      const parts = dt.toLocaleString('en-US', {
+      // Get the date in Halifax timezone without the +1 day adjustment
+      // Since we've fixed the timezone handling, we can use the correct date
+      const date = dt.toLocaleDateString('en-CA', {
         timeZone: 'America/Halifax',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
-      }).split('/');
-      // Add one day to match database data
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
+      }).split('/').reverse().join('-');
       const donorName = donation.Donor.name;
       const totalWeight = donation.summary;
 
@@ -598,16 +594,14 @@ app.get('/api/outgoing-stats', authenticateToken, async (req: any, res) => {
     const dateSet = new Set<string>();
     shifts.forEach((shift: any) => {
       const dt = new Date(shift.startTime);
-      const parts = dt.toLocaleString('en-US', {
+      // Get the date in Halifax timezone without the +1 day adjustment
+      // Since we've fixed the timezone handling, we can use the correct date
+      const date = dt.toLocaleDateString('en-CA', {
         timeZone: 'America/Halifax',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
-      }).split('/');
-      // Add one day to match database data
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
+      }).split('/').reverse().join('-');
       shiftIdToInfo[shift.id] = {
         date,
         category: categories.find((c: any) => c.id === shift.shiftCategoryId)?.name || '',
@@ -689,16 +683,14 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
     const shiftIdToInfo: Record<number, { date: string, category: string, shiftName: string }> = {};
     shifts.forEach((shift: any) => {
       const dt = new Date(shift.startTime);
-      const parts = dt.toLocaleString('en-US', {
+      // Get the date in Halifax timezone without the +1 day adjustment
+      // Since we've fixed the timezone handling, we can use the correct date
+      const date = dt.toLocaleDateString('en-CA', {
         timeZone: 'America/Halifax',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
-      }).split('/');
-      // Add one day to match database data
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
+      }).split('/').reverse().join('-');
       shiftIdToInfo[shift.id] = {
         date,
         category: categories.find((c: any) => c.id === shift.shiftCategoryId)?.name || '',
@@ -818,16 +810,14 @@ app.get('/api/outgoing-stats/filtered', authenticateToken, async (req: any, res)
     const dateSet = new Set<string>();
     shifts.forEach((shift: any) => {
       const dt = new Date(shift.startTime);
-      const parts = dt.toLocaleString('en-US', {
+      // Get the date in Halifax timezone without the +1 day adjustment
+      // Since we've fixed the timezone handling, we can use the correct date
+      const date = dt.toLocaleDateString('en-CA', {
         timeZone: 'America/Halifax',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
-      }).split('/');
-      // Add one day to match database data
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
+      }).split('/').reverse().join('-');
       shiftIdToDate[shift.id] = date;
       shiftIdToCategory[shift.id] = categoryIdToName[shift.shiftCategoryId] || '';
       dateSet.add(date);
@@ -940,7 +930,7 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: an
         month: '2-digit',
         day: '2-digit'
       }).split('/');
-      // Add one day to match database data
+      // Get the date in Halifax timezone without the +1 day adjustment
       const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
       nextDay.setDate(nextDay.getDate() + 1);
       const date = nextDay.toISOString().split('T')[0];
@@ -1468,7 +1458,7 @@ app.get('/api/inventory-categories', authenticateToken, async (req: any, res) =>
           month: '2-digit',
           day: '2-digit'
         }).split('/');
-        // Add one day to match database data
+        // Get the date in Halifax timezone without the +1 day adjustment
         const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
         nextDay.setDate(nextDay.getDate() + 1);
         const atlanticDateStr = nextDay.toISOString().split('T')[0];
@@ -1542,7 +1532,7 @@ app.get('/api/inventory-categories/filtered', authenticateToken, async (req: any
           month: '2-digit',
           day: '2-digit'
         }).split('/');
-        // Add one day to match database data
+        // Get the date in Halifax timezone without the +1 day adjustment
         const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
         nextDay.setDate(nextDay.getDate() + 1);
         const atlanticDateStr = nextDay.toISOString().split('T')[0];
@@ -1686,7 +1676,7 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
         month: '2-digit',
         day: '2-digit'
       }).split('/');
-      // Add one day to match database data
+      // Get the date in Halifax timezone without the +1 day adjustment
       const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
       nextDay.setDate(nextDay.getDate() + 1);
       const date = nextDay.toISOString().split('T')[0];
@@ -2981,6 +2971,46 @@ app.get('/api/users/management', authenticateToken, async (req: any, res) => {
   }
 });
 
+// Helper function to get role-based module permissions
+const getRoleBasedPermissions = (role: string, modules: any[], userId: number, organizationId: number) => {
+  console.log(`🎯 Setting permissions for ${role} user...`);
+  
+  return modules.map(module => {
+    let canAccess = false;
+    
+    if (role === 'ADMIN') {
+      // Admin users get access to admin-specific modules
+      const adminModules = [
+        'Donation Management',
+        'Admin Meal Counting',
+        'Group Shifts Management'
+      ];
+      canAccess = adminModules.includes(module.name);
+      if (adminModules.includes(module.name)) {
+        console.log(`  ✅ ADMIN access granted to: ${module.name}`);
+      }
+    } else if (role === 'STAFF' || role === 'VOLUNTEER') {
+      // Staff and Volunteer users get access to volunteer-focused modules
+      const volunteerModules = [
+        'Donation Management',
+        'Volunteer Meal counting', // Exact match from database
+        'Volunteer Shift Management'
+      ];
+      canAccess = volunteerModules.includes(module.name);
+      if (volunteerModules.includes(module.name)) {
+        console.log(`  ✅ STAFF/VOLUNTEER access granted to: ${module.name}`);
+      }
+    }
+    
+    return {
+      userId,
+      organizationId,
+      moduleId: module.id,
+      canAccess
+    };
+  });
+};
+
 // Approve user
 app.put('/api/users/:id/approve', authenticateToken, async (req: any, res) => {
   try {
@@ -3011,23 +3041,35 @@ app.put('/api/users/:id/approve', authenticateToken, async (req: any, res) => {
       }
     });
 
-    // Create default permissions for approved user
+    // Create role-based permissions for approved user
     const modules = await prisma.module.findMany();
-    const defaultPermissions = modules.map(module => ({
-      userId,
-      organizationId,
-      moduleId: module.id,
-      canAccess: module.name === 'Dashboard' || module.name === 'Profile' // Default access to Dashboard and Profile
-    }));
+    
+    // Debug: Log all available modules
+    console.log(`🔍 Available modules for ${updatedUser.role} user:`);
+    modules.forEach(module => {
+      console.log(`  - ${module.name} (ID: ${module.id})`);
+    });
+    
+    const roleBasedPermissions = getRoleBasedPermissions(updatedUser.role, modules, userId, organizationId);
 
     await prisma.userModulePermission.createMany({
-      data: defaultPermissions,
+      data: roleBasedPermissions,
       skipDuplicates: true
     });
 
+    // Log the permissions assigned for debugging
+    const assignedPermissions = roleBasedPermissions.filter(p => p.canAccess);
+    const moduleNames = assignedPermissions.map(p => {
+      const module = modules.find(m => m.id === p.moduleId);
+      return module ? module.name : 'Unknown';
+    });
+    
+    console.log(`✅ User ${updatedUser.firstName} ${updatedUser.lastName} (${updatedUser.role}) approved with access to: ${moduleNames.join(', ')}`);
+
     res.json({
       ...updatedUser,
-      name: `${updatedUser.firstName} ${updatedUser.lastName}`
+      name: `${updatedUser.firstName} ${updatedUser.lastName}`,
+      assignedModules: moduleNames
     });
   } catch (err) {
     console.error('Error approving user:', err);
@@ -7045,6 +7087,398 @@ app.put('/api/recurring-shifts/:id/registration-fields', authenticateToken, asyn
     res.json(registrationFields);
   } catch (err) {
     console.error('Error updating registration fields:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Detail Donations CRUD endpoints
+app.get('/detail-donations', authenticateToken, async (req, res) => {
+  try {
+    const { date } = req.query;
+    const organizationId = req.user?.organizationId;
+    
+    if (!organizationId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    if (!date) {
+      return res.status(400).json({ error: 'Date parameter is required' });
+    }
+
+    // Get all donors for this organization
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: organizationId },
+      orderBy: { name: 'asc' }
+    });
+
+    // Get all donation categories for this organization
+    const categories = await prisma.donationCategory.findMany({
+      where: { organizationId },
+      orderBy: { name: 'asc' }
+    });
+
+    // Get donations for the specific date
+    // The frontend sends dates in Halifax timezone (e.g., "2025-08-15")
+    // We need to create the date range in Halifax timezone to match the frontend
+    // Create dates in Halifax timezone by using the date string directly
+    const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+    const endDate = new Date(`${date}T23:59:59-03:00`);   // Halifax is UTC-3
+    
+    // For database query, we need to convert to UTC
+    // The database stores everything in UTC, so we query with UTC dates
+    const utcStartDate = new Date(startDate.getTime());
+    const utcEndDate = new Date(endDate.getTime());
+
+    const donations = await prisma.donation.findMany({
+      where: {
+        organizationId,
+        createdAt: {
+          gte: utcStartDate,
+          lte: utcEndDate
+        }
+      },
+      include: {
+        Donor: true,
+        DonationItem: {
+          include: {
+            DonationCategory: true
+          }
+        }
+      }
+    });
+
+    // Build the table data: rows are donors, columns are categories
+    const tableData = donors.map(donor => {
+      const row: any = { donorId: donor.id, donorName: donor.name };
+      
+      // Initialize all categories with 0
+      categories.forEach(category => {
+        row[category.name] = 0;
+      });
+
+      // Find donations for this donor on this date
+      const donorDonations = donations.filter(d => d.donorId === donor.id);
+      
+      // Sum up weights for each category
+      donorDonations.forEach(donation => {
+        donation.DonationItem.forEach(item => {
+          const categoryName = item.DonationCategory.name;
+          if (row.hasOwnProperty(categoryName)) {
+            row[categoryName] += item.weightKg;
+          }
+        });
+      });
+
+      return row;
+    });
+
+    res.json({
+      donors: donors.map(d => ({ id: d.id, name: d.name })),
+      categories: categories.map(c => ({ id: c.id, name: c.name })),
+      tableData
+    });
+  } catch (err) {
+    console.error('Error fetching detail donations:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/detail-donations', authenticateToken, async (req, res) => {
+  try {
+    const { date, donorId, categoryId, weightKg } = req.body;
+    const organizationId = req.user?.organizationId;
+    
+    if (!organizationId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    if (!date || !donorId || !categoryId || weightKg === undefined) {
+      return res.status(400).json({ error: 'Date, donorId, categoryId, and weightKg are required' });
+    }
+
+    // Validate donor belongs to organization
+    const donor = await prisma.donor.findFirst({
+      where: { id: donorId, kitchenId: organizationId }
+    });
+
+    if (!donor) {
+      return res.status(404).json({ error: 'Donor not found' });
+    }
+
+    // Validate category belongs to organization
+    const category = await prisma.donationCategory.findFirst({
+      where: { id: categoryId, organizationId }
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if donation already exists for this donor and date
+    // Handle Halifax timezone dates properly
+    const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+    const endDate = new Date(`${date}T23:59:59-03:00`);   // Halifax is UTC-3
+    
+    // Convert to UTC for database query
+    const utcStartDate = new Date(startDate.getTime());
+    const utcEndDate = new Date(endDate.getTime());
+
+    const existingDonation = await prisma.donation.findFirst({
+      where: {
+        organizationId,
+        donorId,
+        createdAt: {
+          gte: utcStartDate,
+          lte: utcEndDate
+        }
+      }
+    });
+
+    let donation;
+    if (existingDonation) {
+      // Update existing donation item
+      await prisma.donationItem.upsert({
+        where: {
+          donationId_categoryId: {
+            donationId: existingDonation.id,
+            categoryId
+          }
+        },
+        update: {
+          weightKg
+        },
+        create: {
+          donationId: existingDonation.id,
+          categoryId,
+          weightKg
+        }
+      });
+
+      // Update donation summary
+      const totalWeight = await prisma.donationItem.aggregate({
+        where: { donationId: existingDonation.id },
+        _sum: { weightKg: true }
+      });
+
+      donation = await prisma.donation.update({
+        where: { id: existingDonation.id },
+        data: { summary: totalWeight._sum.weightKg || 0 }
+      });
+    } else {
+      // Create new donation
+      donation = await prisma.donation.create({
+        data: {
+          organizationId,
+          donorId,
+          summary: weightKg,
+          createdAt: utcStartDate
+        }
+      });
+
+      // Create donation item
+      await prisma.donationItem.create({
+        data: {
+          donationId: donation.id,
+          categoryId,
+          weightKg
+        }
+      });
+    }
+
+    res.status(201).json(donation);
+  } catch (err) {
+    console.error('Error creating/updating detail donation:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
+  try {
+    const { donorId, categoryId } = req.params;
+    const { date, weightKg } = req.body;
+    const organizationId = req.user?.organizationId;
+
+    if (!organizationId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    if (!date || weightKg === undefined) {
+      return res.status(400).json({ error: 'Date and weightKg are required' });
+    }
+
+    // Validate donor belongs to organization
+    const donor = await prisma.donor.findFirst({
+      where: { id: parseInt(donorId), kitchenId: organizationId }
+    });
+
+    if (!donor) {
+      return res.status(404).json({ error: 'Donor not found' });
+    }
+
+    // Validate category belongs to organization
+    const category = await prisma.donationCategory.findFirst({
+      where: { id: parseInt(categoryId), organizationId }
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Find or create donation for this donor and date
+    // Handle Halifax timezone dates properly
+    const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+    const endDate = new Date(`${date}T23:59:59-03:00`);   // Halifax is UTC-3
+    
+    // Convert to UTC for database query
+    const utcStartDate = new Date(startDate.getTime());
+    const utcEndDate = new Date(endDate.getTime());
+
+    let donation = await prisma.donation.findFirst({
+      where: {
+        organizationId,
+        donorId: parseInt(donorId),
+        createdAt: {
+          gte: utcStartDate,
+          lte: utcEndDate
+        }
+      }
+    });
+
+    if (!donation) {
+      // Create new donation if it doesn't exist
+      donation = await prisma.donation.create({
+        data: {
+          organizationId,
+          donorId: parseInt(donorId),
+          summary: weightKg,
+          createdAt: utcStartDate
+        }
+      });
+    }
+
+    // Update or create donation item
+    await prisma.donationItem.upsert({
+      where: {
+        donationId_categoryId: {
+          donationId: donation.id,
+          categoryId: parseInt(categoryId)
+        }
+      },
+      update: {
+        weightKg
+      },
+      create: {
+        donationId: donation.id,
+        categoryId: parseInt(categoryId),
+        weightKg
+      }
+    });
+
+    // Update donation summary
+    const totalWeight = await prisma.donationItem.aggregate({
+      where: { donationId: donation.id },
+      _sum: { weightKg: true }
+    });
+
+    const updatedDonation = await prisma.donation.update({
+      where: { id: donation.id },
+      data: { summary: totalWeight._sum.weightKg || 0 }
+    });
+
+    res.json(updatedDonation);
+  } catch (err) {
+    console.error('Error updating detail donation:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
+  try {
+    const { donorId, categoryId } = req.params;
+    const { date } = req.query;
+    const organizationId = req.user?.organizationId;
+
+    if (!organizationId) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+
+    if (!date) {
+      return res.status(400).json({ error: 'Date parameter is required' });
+    }
+
+    // Validate donor belongs to organization
+    const donor = await prisma.donor.findFirst({
+      where: { id: parseInt(donorId), kitchenId: organizationId }
+    });
+
+    if (!donor) {
+      return res.status(404).json({ error: 'Donor not found' });
+    }
+
+    // Validate category belongs to organization
+    const category = await prisma.donationCategory.findFirst({
+      where: { id: parseInt(categoryId), organizationId }
+    });
+
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Find donation for this donor and date
+    // Handle Halifax timezone dates properly
+    const startDate = new Date(`${date as string}T00:00:00-03:00`); // Halifax is UTC-3
+    const endDate = new Date(`${date as string}T23:59:59-03:00`);   // Halifax is UTC-3
+    
+    // Convert to UTC for database query
+    const utcStartDate = new Date(startDate.getTime());
+    const utcEndDate = new Date(endDate.getTime());
+
+    const donation = await prisma.donation.findFirst({
+      where: {
+        organizationId,
+        donorId: parseInt(donorId),
+        createdAt: {
+          gte: utcStartDate,
+          lte: utcEndDate
+        }
+      }
+    });
+
+    if (donation) {
+      // Delete the specific donation item
+      await prisma.donationItem.deleteMany({
+        where: {
+          donationId: donation.id,
+          categoryId: parseInt(categoryId)
+        }
+      });
+
+      // Update donation summary
+      const totalWeight = await prisma.donationItem.aggregate({
+        where: { donationId: donation.id },
+        _sum: { weightKg: true }
+      });
+
+      await prisma.donation.update({
+        where: { id: donation.id },
+        data: { summary: totalWeight._sum.weightKg || 0 }
+      });
+
+      // If no more items, delete the donation
+      const remainingItems = await prisma.donationItem.count({
+        where: { donationId: donation.id }
+      });
+
+      if (remainingItems === 0) {
+        await prisma.donation.delete({
+          where: { id: donation.id }
+        });
+      }
+    }
+
+    res.json({ message: 'Donation item deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting detail donation:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -9,7 +9,7 @@ datasource db {
 
 model Donation {
   id             Int            @id @default(autoincrement())
-  shiftId        Int
+  shiftId        Int?           // Made optional to support manual donations
   organizationId Int
   donorId        Int
   shiftSignupId  Int?
@@ -17,7 +17,7 @@ model Donation {
   summary        Float
   Donor          Donor          @relation(fields: [donorId], references: [id])
   Organization   Organization   @relation(fields: [organizationId], references: [id])
-  Shift          Shift          @relation(fields: [shiftId], references: [id])
+  Shift          Shift?         @relation(fields: [shiftId], references: [id]) // Made optional
   ShiftSignup    ShiftSignup?   @relation(fields: [shiftSignupId], references: [id])
   DonationItem   DonationItem[]
 }
@@ -38,6 +38,8 @@ model DonationItem {
   weightKg         Float
   DonationCategory DonationCategory @relation(fields: [categoryId], references: [id])
   Donation         Donation         @relation(fields: [donationId], references: [id])
+
+  @@unique([donationId, categoryId]) // Added unique constraint
 }
 
 model Donor {

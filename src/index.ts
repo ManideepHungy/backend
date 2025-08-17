@@ -2972,43 +2972,59 @@ app.get('/api/users/management', authenticateToken, async (req: any, res) => {
 });
 
 // Helper function to get role-based module permissions
-const getRoleBasedPermissions = (role: string, modules: any[], userId: number, organizationId: number) => {
+const getRoleBasedPermissions = async (role: string, modules: any[], userId: number, organizationId: number) => {
   console.log(`🎯 Setting permissions for ${role} user...`);
   
-  return modules.map(module => {
-    let canAccess = false;
+  try {
+    // Get default permissions for this role from the database
+    const defaultPermissions = await prisma.roleDefaultPermission.findMany({
+      where: { role: role as any },
+      include: { Module: true }
+    });
+
+    console.log(`📋 Found ${defaultPermissions.length} default permissions for ${role} role`);
+
+    // Map modules to permissions based on default role settings
     
-    if (role === 'ADMIN') {
-      // Admin users get access to admin-specific modules
-      const adminModules = [
-        'Donation Management',
-        'Admin Meal Counting',
-        'Group Shifts Management'
-      ];
-      canAccess = adminModules.includes(module.name);
-      if (adminModules.includes(module.name)) {
-        console.log(`  ✅ ADMIN access granted to: ${module.name}`);
+    return modules.map(module => {
+      const defaultPermission = defaultPermissions.find(dp => dp.moduleId === module.id);
+      const canAccess = defaultPermission ? defaultPermission.canAccess : false;
+      
+      if (canAccess) {
+        console.log(`  ✅ ${role} access granted to: ${module.name}`);
+      } else {
+        console.log(`  ❌ ${role} access denied to: ${module.name}`);
       }
-    } else if (role === 'STAFF' || role === 'VOLUNTEER') {
-      // Staff and Volunteer users get access to volunteer-focused modules
-      const volunteerModules = [
-        'Donation Management',
-        'Volunteer Meal counting', // Exact match from database
-        'Volunteer Shift Management'
-      ];
-      canAccess = volunteerModules.includes(module.name);
-      if (volunteerModules.includes(module.name)) {
-        console.log(`  ✅ STAFF/VOLUNTEER access granted to: ${module.name}`);
+      
+      return {
+        userId,
+        organizationId,
+        moduleId: module.id,
+        canAccess
+      };
+    });
+  } catch (error) {
+    console.error(`❌ Error getting default permissions for ${role} role:`, error);
+    // Fallback to hardcoded permissions if database query fails
+    return modules.map(module => {
+      let canAccess = false;
+      
+      if (role === 'ADMIN') {
+        const adminModules = ['Donation Management', 'Admin Meal Counting', 'Group Shifts Management'];
+        canAccess = adminModules.includes(module.name);
+      } else if (role === 'STAFF' || role === 'VOLUNTEER') {
+        const volunteerModules = ['Donation Management', 'Volunteer Meal counting', 'Volunteer Shift Management'];
+        canAccess = volunteerModules.includes(module.name);
       }
-    }
-    
-    return {
-      userId,
-      organizationId,
-      moduleId: module.id,
-      canAccess
-    };
-  });
+      
+      return {
+        userId,
+        organizationId,
+        moduleId: module.id,
+        canAccess
+      };
+    });
+  }
 };
 
 // Approve user
@@ -3050,7 +3066,7 @@ app.put('/api/users/:id/approve', authenticateToken, async (req: any, res) => {
       console.log(`  - ${module.name} (ID: ${module.id})`);
     });
     
-    const roleBasedPermissions = getRoleBasedPermissions(updatedUser.role, modules, userId, organizationId);
+    const roleBasedPermissions = await getRoleBasedPermissions(updatedUser.role, modules, userId, organizationId);
 
     await prisma.userModulePermission.createMany({
       data: roleBasedPermissions,
@@ -3440,6 +3456,111 @@ app.get('/api/users/permissions/overview', authenticateToken, async (req: any, r
   } catch (err) {
     console.error('Error fetching users permission overview:', err);
     res.status(500).json({ error: 'Failed to fetch users permission overview' });
+  }
+});
+
+// --- Default Role Permissions Management Endpoints ---
+
+// Get default permissions for all roles
+app.get('/api/roles/default-permissions', authenticateToken, async (req: any, res) => {
+  try {
+    const defaultPermissions = await prisma.roleDefaultPermission.findMany({
+      include: { Module: true },
+      orderBy: [
+        { role: 'asc' },
+        { Module: { name: 'asc' } }
+      ]
+    });
+
+    // Group by role for easier frontend consumption
+    const groupedPermissions = defaultPermissions.reduce((acc, permission) => {
+      const role = permission.role;
+      if (!acc[role]) {
+        acc[role] = [];
+      }
+      acc[role].push({
+        id: permission.id,
+        moduleId: permission.moduleId,
+        moduleName: permission.Module.name,
+        moduleDescription: permission.Module.description,
+        canAccess: permission.canAccess
+      });
+      return acc;
+    }, {} as Record<string, any[]>);
+
+    res.json(groupedPermissions);
+  } catch (err) {
+    console.error('Error fetching default role permissions:', err);
+    res.status(500).json({ error: 'Failed to fetch default role permissions' });
+  }
+});
+
+// Update default permissions for a specific role
+app.put('/api/roles/:role/default-permissions', authenticateToken, async (req: any, res) => {
+  try {
+    const { role } = req.params;
+    const { permissions } = req.body; // Array of { moduleId, canAccess }
+
+    // Validate role
+    if (!['ADMIN', 'STAFF', 'VOLUNTEER'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    // Validate permissions format
+    if (!Array.isArray(permissions)) {
+      return res.status(400).json({ error: 'Permissions must be an array' });
+    }
+
+    // Delete existing default permissions for this role
+    await prisma.roleDefaultPermission.deleteMany({
+      where: { role: role as any }
+    });
+
+    // Create new default permissions
+    const permissionData = permissions.map((p: any) => ({
+      role: role as any,
+      moduleId: p.moduleId,
+      canAccess: p.canAccess
+    }));
+
+    await prisma.roleDefaultPermission.createMany({
+      data: permissionData
+    });
+
+    // Return updated permissions
+    const updatedPermissions = await prisma.roleDefaultPermission.findMany({
+      where: { role: role as any },
+      include: { Module: true }
+    });
+
+    const result = updatedPermissions.map(permission => ({
+      id: permission.id,
+      moduleId: permission.moduleId,
+      moduleName: permission.Module.name,
+      moduleDescription: permission.Module.description,
+      canAccess: permission.canAccess
+    }));
+
+    res.json({
+      role,
+      permissions: result
+    });
+  } catch (err) {
+    console.error('Error updating default role permissions:', err);
+    res.status(500).json({ error: 'Failed to update default role permissions' });
+  }
+});
+
+// Get all modules for role permission configuration
+app.get('/api/modules/for-role-permissions', authenticateToken, async (req: any, res) => {
+  try {
+    const modules = await prisma.module.findMany({
+      orderBy: { name: 'asc' }
+    });
+    res.json(modules);
+  } catch (err) {
+    console.error('Error fetching modules for role permissions:', err);
+    res.status(500).json({ error: 'Failed to fetch modules' });
   }
 });
 
@@ -5382,7 +5503,7 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     // Build donor x category table
     const donorIdToName: Record<number, string> = {};
     donors.forEach(d => { donorIdToName[d.id] = d.name; });
-    const catIdToName: Record<number, string> = {};
+    const catIdToName: Record<string, string> = {};
     categories.forEach(c => { catIdToName[c.id] = c.name; });
     // Initialize table: donorName -> categoryName -> 0
     const table: Record<string, Record<string, number>> = {};
@@ -5395,7 +5516,7 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     // Fill table with actual weights
     items.forEach(item => {
       const donorName = donorIdToName[Number(item.Donation.donorId)];
-      const catName = catIdToName[Number(item.categoryId)];
+      const catName = catIdToName[String(item.categoryId)];
       if (donorName && catName) {
         table[donorName][catName] += item.weightKg;
       }

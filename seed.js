@@ -733,6 +733,50 @@ async function main() {
 
   console.log('✅ Modules created');
 
+  // Create default role permissions
+  console.log('Creating default role permissions...');
+  
+  // ADMIN role default permissions
+  await prisma.roleDefaultPermission.createMany({
+    data: [
+      { role: 'ADMIN', moduleId: donationManagementModule.id, canAccess: true },
+      { role: 'ADMIN', moduleId: adminMealCountingModule.id, canAccess: true },
+      { role: 'ADMIN', moduleId: groupShiftsManagementModule.id, canAccess: true },
+      { role: 'ADMIN', moduleId: dashboardModule.id, canAccess: true },
+      { role: 'ADMIN', moduleId: profileModule.id, canAccess: true },
+      { role: 'ADMIN', moduleId: volunteerMealCountingModule.id, canAccess: false },
+      { role: 'ADMIN', moduleId: volunteerShiftManagementModule.id, canAccess: false }
+    ]
+  });
+
+  // STAFF role default permissions
+  await prisma.roleDefaultPermission.createMany({
+    data: [
+      { role: 'STAFF', moduleId: donationManagementModule.id, canAccess: true },
+      { role: 'STAFF', moduleId: volunteerMealCountingModule.id, canAccess: true },
+      { role: 'STAFF', moduleId: volunteerShiftManagementModule.id, canAccess: true },
+      { role: 'STAFF', moduleId: dashboardModule.id, canAccess: true },
+      { role: 'STAFF', moduleId: profileModule.id, canAccess: true },
+      { role: 'STAFF', moduleId: adminMealCountingModule.id, canAccess: false },
+      { role: 'STAFF', moduleId: groupShiftsManagementModule.id, canAccess: false }
+    ]
+  });
+
+  // VOLUNTEER role default permissions
+  await prisma.roleDefaultPermission.createMany({
+    data: [
+      { role: 'VOLUNTEER', moduleId: donationManagementModule.id, canAccess: true },
+      { role: 'VOLUNTEER', moduleId: volunteerMealCountingModule.id, canAccess: true },
+      { role: 'VOLUNTEER', moduleId: volunteerShiftManagementModule.id, canAccess: true },
+      { role: 'VOLUNTEER', moduleId: dashboardModule.id, canAccess: true },
+      { role: 'VOLUNTEER', moduleId: profileModule.id, canAccess: true },
+      { role: 'VOLUNTEER', moduleId: adminMealCountingModule.id, canAccess: false },
+      { role: 'VOLUNTEER', moduleId: groupShiftsManagementModule.id, canAccess: false }
+    ]
+  });
+
+  console.log('✅ Default role permissions created');
+
   console.log('🎉 Database seeding completed successfully!');
   console.log('\n📊 Sample Data Summary:');
   console.log(`- Organizations: 2`);
@@ -748,6 +792,7 @@ async function main() {
   console.log(`- Donation Items: 8`);
   console.log(`- Weighing Categories: 6`);
   console.log(`- Modules: 7 (Donation Management, Volunteer Meal Counting, Volunteer Shift Management, Admin Meal Counting, Group Shifts Management, Dashboard, Profile)`);
+  console.log(`- Role Default Permissions: 21 (7 modules × 3 roles)`);
   console.log('\n🔑 Login Credentials:');
   console.log('Email: admin@communityfoodbank.org');
   console.log('Password: password123');

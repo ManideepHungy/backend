@@ -209,16 +209,14 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
         // Group donations by date and donor, using donation.summary as total weight
         const groupedData = donations.reduce((acc, donation) => {
             const dt = new Date(donation.createdAt);
-            const parts = dt.toLocaleString('en-US', {
+            // Get the date in Halifax timezone without the +1 day adjustment
+            // Since we've fixed the timezone handling, we can use the correct date
+            const date = dt.toLocaleDateString('en-CA', {
                 timeZone: 'America/Halifax',
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+            }).split('/').reverse().join('-');
             const donorName = donation.Donor.name;
             const totalWeight = donation.summary;
             if (!acc[date]) {
@@ -322,16 +320,14 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
         // Group donations by date and donor, using donation.summary as total weight
         const groupedData = donations.reduce((acc, donation) => {
             const dt = new Date(donation.createdAt);
-            const parts = dt.toLocaleString('en-US', {
+            // Get the date in Halifax timezone without the +1 day adjustment
+            // Since we've fixed the timezone handling, we can use the correct date
+            const date = dt.toLocaleDateString('en-CA', {
                 timeZone: 'America/Halifax',
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+            }).split('/').reverse().join('-');
             const donorName = donation.Donor.name;
             const totalWeight = donation.summary;
             if (!acc[date]) {
@@ -548,16 +544,14 @@ app.get('/api/outgoing-stats', authenticateToken, async (req, res) => {
         shifts.forEach((shift) => {
             var _a;
             const dt = new Date(shift.startTime);
-            const parts = dt.toLocaleString('en-US', {
+            // Get the date in Halifax timezone without the +1 day adjustment
+            // Since we've fixed the timezone handling, we can use the correct date
+            const date = dt.toLocaleDateString('en-CA', {
                 timeZone: 'America/Halifax',
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+            }).split('/').reverse().join('-');
             shiftIdToInfo[shift.id] = {
                 date,
                 category: ((_a = categories.find((c) => c.id === shift.shiftCategoryId)) === null || _a === void 0 ? void 0 : _a.name) || '',
@@ -644,16 +638,14 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req, r
         shifts.forEach((shift) => {
             var _a;
             const dt = new Date(shift.startTime);
-            const parts = dt.toLocaleString('en-US', {
+            // Get the date in Halifax timezone without the +1 day adjustment
+            // Since we've fixed the timezone handling, we can use the correct date
+            const date = dt.toLocaleDateString('en-CA', {
                 timeZone: 'America/Halifax',
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+            }).split('/').reverse().join('-');
             shiftIdToInfo[shift.id] = {
                 date,
                 category: ((_a = categories.find((c) => c.id === shift.shiftCategoryId)) === null || _a === void 0 ? void 0 : _a.name) || '',
@@ -776,16 +768,14 @@ app.get('/api/outgoing-stats/filtered', authenticateToken, async (req, res) => {
         const dateSet = new Set();
         shifts.forEach((shift) => {
             const dt = new Date(shift.startTime);
-            const parts = dt.toLocaleString('en-US', {
+            // Get the date in Halifax timezone without the +1 day adjustment
+            // Since we've fixed the timezone handling, we can use the correct date
+            const date = dt.toLocaleDateString('en-CA', {
                 timeZone: 'America/Halifax',
                 year: 'numeric',
                 month: '2-digit',
                 day: '2-digit'
-            }).split('/');
-            // Add one day to match database data
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
+            }).split('/').reverse().join('-');
             shiftIdToDate[shift.id] = date;
             shiftIdToCategory[shift.id] = categoryIdToName[shift.shiftCategoryId] || '';
             dateSet.add(date);
@@ -893,7 +883,7 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req, re
                 month: '2-digit',
                 day: '2-digit'
             }).split('/');
-            // Add one day to match database data
+            // Get the date in Halifax timezone without the +1 day adjustment
             const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
             nextDay.setDate(nextDay.getDate() + 1);
             const date = nextDay.toISOString().split('T')[0];
@@ -1419,7 +1409,7 @@ app.get('/api/inventory-categories', authenticateToken, async (req, res) => {
                     month: '2-digit',
                     day: '2-digit'
                 }).split('/');
-                // Add one day to match database data
+                // Get the date in Halifax timezone without the +1 day adjustment
                 const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
                 nextDay.setDate(nextDay.getDate() + 1);
                 const atlanticDateStr = nextDay.toISOString().split('T')[0];
@@ -1498,7 +1488,7 @@ app.get('/api/inventory-categories/filtered', authenticateToken, async (req, res
                     month: '2-digit',
                     day: '2-digit'
                 }).split('/');
-                // Add one day to match database data
+                // Get the date in Halifax timezone without the +1 day adjustment
                 const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
                 nextDay.setDate(nextDay.getDate() + 1);
                 const atlanticDateStr = nextDay.toISOString().split('T')[0];
@@ -1650,7 +1640,7 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req, r
                 month: '2-digit',
                 day: '2-digit'
             }).split('/');
-            // Add one day to match database data
+            // Get the date in Halifax timezone without the +1 day adjustment
             const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
             nextDay.setDate(nextDay.getDate() + 1);
             const date = nextDay.toISOString().split('T')[0];
@@ -2830,6 +2820,56 @@ app.get('/api/users/management', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch users' });
     }
 });
+// Helper function to get role-based module permissions
+const getRoleBasedPermissions = async (role, modules, userId, organizationId) => {
+    console.log(`🎯 Setting permissions for ${role} user...`);
+    try {
+        // Get default permissions for this role from the database
+        const defaultPermissions = await prisma.roleDefaultPermission.findMany({
+            where: { role: role },
+            include: { Module: true }
+        });
+        console.log(`📋 Found ${defaultPermissions.length} default permissions for ${role} role`);
+        // Map modules to permissions based on default role settings
+        return modules.map(module => {
+            const defaultPermission = defaultPermissions.find(dp => dp.moduleId === module.id);
+            const canAccess = defaultPermission ? defaultPermission.canAccess : false;
+            if (canAccess) {
+                console.log(`  ✅ ${role} access granted to: ${module.name}`);
+            }
+            else {
+                console.log(`  ❌ ${role} access denied to: ${module.name}`);
+            }
+            return {
+                userId,
+                organizationId,
+                moduleId: module.id,
+                canAccess
+            };
+        });
+    }
+    catch (error) {
+        console.error(`❌ Error getting default permissions for ${role} role:`, error);
+        // Fallback to hardcoded permissions if database query fails
+        return modules.map(module => {
+            let canAccess = false;
+            if (role === 'ADMIN') {
+                const adminModules = ['Donation Management', 'Admin Meal Counting', 'Group Shifts Management'];
+                canAccess = adminModules.includes(module.name);
+            }
+            else if (role === 'STAFF' || role === 'VOLUNTEER') {
+                const volunteerModules = ['Donation Management', 'Volunteer Meal counting', 'Volunteer Shift Management'];
+                canAccess = volunteerModules.includes(module.name);
+            }
+            return {
+                userId,
+                organizationId,
+                moduleId: module.id,
+                canAccess
+            };
+        });
+    }
+};
 // Approve user
 app.put('/api/users/:id/approve', authenticateToken, async (req, res) => {
     try {
@@ -2855,21 +2895,29 @@ app.put('/api/users/:id/approve', authenticateToken, async (req, res) => {
                 updatedAt: new Date()
             }
         });
-        // Create default permissions for approved user
+        // Create role-based permissions for approved user
         const modules = await prisma.module.findMany();
-        const defaultPermissions = modules.map(module => ({
-            userId,
-            organizationId,
-            moduleId: module.id,
-            canAccess: module.name === 'Dashboard' || module.name === 'Profile' // Default access to Dashboard and Profile
-        }));
+        // Debug: Log all available modules
+        console.log(`🔍 Available modules for ${updatedUser.role} user:`);
+        modules.forEach(module => {
+            console.log(`  - ${module.name} (ID: ${module.id})`);
+        });
+        const roleBasedPermissions = await getRoleBasedPermissions(updatedUser.role, modules, userId, organizationId);
         await prisma.userModulePermission.createMany({
-            data: defaultPermissions,
+            data: roleBasedPermissions,
             skipDuplicates: true
         });
+        // Log the permissions assigned for debugging
+        const assignedPermissions = roleBasedPermissions.filter(p => p.canAccess);
+        const moduleNames = assignedPermissions.map(p => {
+            const module = modules.find(m => m.id === p.moduleId);
+            return module ? module.name : 'Unknown';
+        });
+        console.log(`✅ User ${updatedUser.firstName} ${updatedUser.lastName} (${updatedUser.role}) approved with access to: ${moduleNames.join(', ')}`);
         res.json({
             ...updatedUser,
-            name: `${updatedUser.firstName} ${updatedUser.lastName}`
+            name: `${updatedUser.firstName} ${updatedUser.lastName}`,
+            assignedModules: moduleNames
         });
     }
     catch (err) {
@@ -3199,6 +3247,100 @@ app.get('/api/users/permissions/overview', authenticateToken, async (req, res) =
     catch (err) {
         console.error('Error fetching users permission overview:', err);
         res.status(500).json({ error: 'Failed to fetch users permission overview' });
+    }
+});
+// --- Default Role Permissions Management Endpoints ---
+// Get default permissions for all roles
+app.get('/api/roles/default-permissions', authenticateToken, async (req, res) => {
+    try {
+        const defaultPermissions = await prisma.roleDefaultPermission.findMany({
+            include: { Module: true },
+            orderBy: [
+                { role: 'asc' },
+                { Module: { name: 'asc' } }
+            ]
+        });
+        // Group by role for easier frontend consumption
+        const groupedPermissions = defaultPermissions.reduce((acc, permission) => {
+            const role = permission.role;
+            if (!acc[role]) {
+                acc[role] = [];
+            }
+            acc[role].push({
+                id: permission.id,
+                moduleId: permission.moduleId,
+                moduleName: permission.Module.name,
+                moduleDescription: permission.Module.description,
+                canAccess: permission.canAccess
+            });
+            return acc;
+        }, {});
+        res.json(groupedPermissions);
+    }
+    catch (err) {
+        console.error('Error fetching default role permissions:', err);
+        res.status(500).json({ error: 'Failed to fetch default role permissions' });
+    }
+});
+// Update default permissions for a specific role
+app.put('/api/roles/:role/default-permissions', authenticateToken, async (req, res) => {
+    try {
+        const { role } = req.params;
+        const { permissions } = req.body; // Array of { moduleId, canAccess }
+        // Validate role
+        if (!['ADMIN', 'STAFF', 'VOLUNTEER'].includes(role)) {
+            return res.status(400).json({ error: 'Invalid role' });
+        }
+        // Validate permissions format
+        if (!Array.isArray(permissions)) {
+            return res.status(400).json({ error: 'Permissions must be an array' });
+        }
+        // Delete existing default permissions for this role
+        await prisma.roleDefaultPermission.deleteMany({
+            where: { role: role }
+        });
+        // Create new default permissions
+        const permissionData = permissions.map((p) => ({
+            role: role,
+            moduleId: p.moduleId,
+            canAccess: p.canAccess
+        }));
+        await prisma.roleDefaultPermission.createMany({
+            data: permissionData
+        });
+        // Return updated permissions
+        const updatedPermissions = await prisma.roleDefaultPermission.findMany({
+            where: { role: role },
+            include: { Module: true }
+        });
+        const result = updatedPermissions.map(permission => ({
+            id: permission.id,
+            moduleId: permission.moduleId,
+            moduleName: permission.Module.name,
+            moduleDescription: permission.Module.description,
+            canAccess: permission.canAccess
+        }));
+        res.json({
+            role,
+            permissions: result
+        });
+    }
+    catch (err) {
+        console.error('Error updating default role permissions:', err);
+        res.status(500).json({ error: 'Failed to update default role permissions' });
+    }
+});
+// Get all modules for role permission configuration
+app.get('/api/modules/for-role-permissions', authenticateToken, async (req, res) => {
+    try {
+        const modules = await prisma.module.findMany({
+            orderBy: { name: 'asc' }
+        });
+        res.json(modules);
+    }
+    catch (err) {
+        console.error('Error fetching modules for role permissions:', err);
+        res.status(500).json({ error: 'Failed to fetch modules' });
     }
 });
 // --- ShiftCategory CRUD Operations ---
@@ -4986,7 +5128,7 @@ app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
         // Fill table with actual weights
         items.forEach(item => {
             const donorName = donorIdToName[Number(item.Donation.donorId)];
-            const catName = catIdToName[Number(item.categoryId)];
+            const catName = catIdToName[String(item.categoryId)];
             if (donorName && catName) {
                 table[donorName][catName] += item.weightKg;
             }
@@ -6527,7 +6669,7 @@ app.put('/api/recurring-shifts/:id/registration-fields', authenticateToken, asyn
     }
 });
 // Detail Donations CRUD endpoints
-app.get('/api/detail-donations', authenticateToken, async (req, res) => {
+app.get('/detail-donations', authenticateToken, async (req, res) => {
     var _a;
     try {
         const { date } = req.query;
@@ -6551,18 +6693,19 @@ app.get('/api/detail-donations', authenticateToken, async (req, res) => {
         // Get donations for the specific date
         // The frontend sends dates in Halifax timezone (e.g., "2025-08-15")
         // We need to create the date range in Halifax timezone to match the frontend
-        const startDate = new Date(`${date}T00:00:00`);
-        const endDate = new Date(`${date}T23:59:59`);
-        // Convert Halifax timezone dates to UTC for database query
-        // This ensures we get the full day in Halifax timezone
-        const halifaxStartDate = new Date(startDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
-        const halifaxEndDate = new Date(endDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
+        // Create dates in Halifax timezone by using the date string directly
+        const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+        const endDate = new Date(`${date}T23:59:59-03:00`); // Halifax is UTC-3
+        // For database query, we need to convert to UTC
+        // The database stores everything in UTC, so we query with UTC dates
+        const utcStartDate = new Date(startDate.getTime());
+        const utcEndDate = new Date(endDate.getTime());
         const donations = await prisma.donation.findMany({
             where: {
                 organizationId,
                 createdAt: {
-                    gte: halifaxStartDate,
-                    lte: halifaxEndDate
+                    gte: utcStartDate,
+                    lte: utcEndDate
                 }
             },
             include: {
@@ -6605,7 +6748,7 @@ app.get('/api/detail-donations', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
-app.post('/api/detail-donations', authenticateToken, async (req, res) => {
+app.post('/detail-donations', authenticateToken, async (req, res) => {
     var _a;
     try {
         const { date, donorId, categoryId, weightKg } = req.body;
@@ -6632,18 +6775,18 @@ app.post('/api/detail-donations', authenticateToken, async (req, res) => {
         }
         // Check if donation already exists for this donor and date
         // Handle Halifax timezone dates properly
-        const startDate = new Date(`${date}T00:00:00`);
-        const endDate = new Date(`${date}T23:59:59`);
-        // Convert to Halifax timezone for proper date comparison
-        const halifaxStartDate = new Date(startDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
-        const halifaxEndDate = new Date(endDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
+        const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+        const endDate = new Date(`${date}T23:59:59-03:00`); // Halifax is UTC-3
+        // Convert to UTC for database query
+        const utcStartDate = new Date(startDate.getTime());
+        const utcEndDate = new Date(endDate.getTime());
         const existingDonation = await prisma.donation.findFirst({
             where: {
                 organizationId,
                 donorId,
                 createdAt: {
-                    gte: halifaxStartDate,
-                    lte: halifaxEndDate
+                    gte: utcStartDate,
+                    lte: utcEndDate
                 }
             }
         });
@@ -6683,7 +6826,7 @@ app.post('/api/detail-donations', authenticateToken, async (req, res) => {
                     organizationId,
                     donorId,
                     summary: weightKg,
-                    createdAt: halifaxStartDate
+                    createdAt: utcStartDate
                 }
             });
             // Create donation item
@@ -6702,7 +6845,7 @@ app.post('/api/detail-donations', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
-app.put('/api/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
+app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
     var _a;
     try {
         const { donorId, categoryId } = req.params;
@@ -6730,18 +6873,18 @@ app.put('/api/detail-donations/:donorId/:categoryId', authenticateToken, async (
         }
         // Find or create donation for this donor and date
         // Handle Halifax timezone dates properly
-        const startDate = new Date(`${date}T00:00:00`);
-        const endDate = new Date(`${date}T23:59:59`);
-        // Convert to Halifax timezone for proper date comparison
-        const halifaxStartDate = new Date(startDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
-        const halifaxEndDate = new Date(endDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
+        const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+        const endDate = new Date(`${date}T23:59:59-03:00`); // Halifax is UTC-3
+        // Convert to UTC for database query
+        const utcStartDate = new Date(startDate.getTime());
+        const utcEndDate = new Date(endDate.getTime());
         let donation = await prisma.donation.findFirst({
             where: {
                 organizationId,
                 donorId: parseInt(donorId),
                 createdAt: {
-                    gte: halifaxStartDate,
-                    lte: halifaxEndDate
+                    gte: utcStartDate,
+                    lte: utcEndDate
                 }
             }
         });
@@ -6752,7 +6895,7 @@ app.put('/api/detail-donations/:donorId/:categoryId', authenticateToken, async (
                     organizationId,
                     donorId: parseInt(donorId),
                     summary: weightKg,
-                    createdAt: halifaxStartDate
+                    createdAt: utcStartDate
                 }
             });
         }
@@ -6789,7 +6932,7 @@ app.put('/api/detail-donations/:donorId/:categoryId', authenticateToken, async (
         res.status(500).json({ error: 'Internal server error' });
     }
 });
-app.delete('/api/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
+app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (req, res) => {
     var _a;
     try {
         const { donorId, categoryId } = req.params;
@@ -6817,18 +6960,18 @@ app.delete('/api/detail-donations/:donorId/:categoryId', authenticateToken, asyn
         }
         // Find donation for this donor and date
         // Handle Halifax timezone dates properly
-        const startDate = new Date(`${date}T00:00:00`);
-        const endDate = new Date(`${date}T23:59:59`);
-        // Convert to Halifax timezone for proper date comparison
-        const halifaxStartDate = new Date(startDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
-        const halifaxEndDate = new Date(endDate.toLocaleString('en-CA', { timeZone: 'America/Halifax' }));
+        const startDate = new Date(`${date}T00:00:00-03:00`); // Halifax is UTC-3
+        const endDate = new Date(`${date}T23:59:59-03:00`); // Halifax is UTC-3
+        // Convert to UTC for database query
+        const utcStartDate = new Date(startDate.getTime());
+        const utcEndDate = new Date(endDate.getTime());
         const donation = await prisma.donation.findFirst({
             where: {
                 organizationId,
                 donorId: parseInt(donorId),
                 createdAt: {
-                    gte: halifaxStartDate,
-                    lte: halifaxEndDate
+                    gte: utcStartDate,
+                    lte: utcEndDate
                 }
             }
         });

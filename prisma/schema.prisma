@@ -280,6 +280,7 @@ model Module {
   name                 String                 @unique
   description          String?
   UserModulePermission UserModulePermission[]
+  RoleDefaultPermission RoleDefaultPermission[]
 }
 
 model TermsAndConditions {
@@ -326,6 +327,16 @@ model UserModulePermission {
   User           User    @relation(fields: [userId], references: [id])
 
   @@unique([userId, organizationId, moduleId])
+}
+
+model RoleDefaultPermission {
+  id             Int     @id @default(autoincrement())
+  role           UserRole
+  moduleId       Int
+  canAccess      Boolean @default(false)
+  Module         Module  @relation(fields: [moduleId], references: [id])
+
+  @@unique([role, moduleId])
 }
 
 

@@ -7604,6 +7604,51 @@ app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (r
   }
 });
 
+// Contact form endpoint
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, description } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !description) {
+      return res.status(400).json({ error: 'Name, email, and description are required' });
+    }
+
+    // Create transporter for sending emails
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER || 'your-email@gmail.com',
+        pass: process.env.EMAIL_PASS || 'your-app-password'
+      }
+    });
+
+    // Email content
+    const mailOptions = {
+      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      to: 'contact@hungy.ca',
+      subject: `New Contact Form Submission from ${name}`,
+      html: `
+        <h2>New Contact Form Submission</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Message:</strong></p>
+        <p>${description.replace(/\n/g, '<br>')}</p>
+        <hr>
+        <p><em>This message was sent from the Hungy website contact form.</em></p>
+      `
+    };
+
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    res.json({ message: 'Contact form submitted successfully' });
+  } catch (error) {
+    console.error('Error sending contact form email:', error);
+    res.status(500).json({ error: 'Failed to send contact form' });
+  }
+});
+
 // Start server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`)

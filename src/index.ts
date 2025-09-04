@@ -4534,21 +4534,6 @@ app.delete('/api/shiftsignups/:id', authenticateToken, async (req: any, res) => 
   }
 });
 
-// Get all donors for the authenticated organization
-app.get('/api/donors', authenticateToken, async (req: any, res) => {
-  try {
-    const organizationId = req.user.organizationId;
-    const donors = await prisma.donor.findMany({
-      where: { kitchenId: organizationId },
-      select: { id: true, name: true }
-    });
-    res.json(donors);
-  } catch (err) {
-    console.error('Error fetching donors:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // Add GET endpoint to fetch shift signups by shiftId
 app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
   try {
@@ -5417,21 +5402,6 @@ app.delete('/api/shiftsignups/:id', authenticateToken, async (req: any, res) => 
   } catch (err) {
     console.error('Error deleting shift signup:', err);
     res.status(500).json({ error: 'Failed to delete shift signup' });
-  }
-});
-
-// Get all donors for the authenticated organization
-app.get('/api/donors', authenticateToken, async (req: any, res) => {
-  try {
-    const organizationId = req.user.organizationId;
-    const donors = await prisma.donor.findMany({
-      where: { kitchenId: organizationId },
-      select: { id: true, name: true }
-    });
-    res.json(donors);
-  } catch (err) {
-    console.error('Error fetching donors:', err);
-    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -6568,6 +6538,160 @@ app.delete('/api/donation-categories/:id', authenticateToken, async (req, res) =
     res.json({ message: 'Category deleted successfully' });
   } catch (err) {
     console.error('Error deleting donation category:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Donor CRUD endpoints
+app.get('/api/donors', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const donors = await prisma.donor.findMany({
+      where: { kitchenId: user.organizationId },
+      orderBy: { name: 'asc' }
+    });
+    res.json(donors);
+  } catch (err) {
+    console.error('Error fetching donors:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/donors', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const { name, location, contactInfo } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Donor name is required' });
+    }
+
+    // Check if donor already exists
+    const existingDonor = await prisma.donor.findFirst({
+      where: {
+        name: name.trim(),
+        kitchenId: user.organizationId
+      }
+    });
+
+    if (existingDonor) {
+      return res.status(400).json({ error: 'Donor with this name already exists' });
+    }
+
+    const donor = await prisma.donor.create({
+      data: {
+        name: name.trim(),
+        location: location || null,
+        contactInfo: contactInfo || null,
+        kitchenId: user.organizationId
+      }
+    });
+
+    res.status(201).json(donor);
+  } catch (err) {
+    console.error('Error creating donor:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/donors/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const donorId = parseInt(req.params.id);
+    const { name, location, contactInfo } = req.body;
+
+    if (!name || name.trim() === '') {
+      return res.status(400).json({ error: 'Donor name is required' });
+    }
+
+    // Check if donor exists and belongs to user's organization
+    const existingDonor = await prisma.donor.findFirst({
+      where: {
+        id: donorId,
+        kitchenId: user.organizationId
+      }
+    });
+
+    if (!existingDonor) {
+      return res.status(404).json({ error: 'Donor not found' });
+    }
+
+    // Check if new name conflicts with existing donor
+    const nameConflict = await prisma.donor.findFirst({
+      where: {
+        name: name.trim(),
+        kitchenId: user.organizationId,
+        id: { not: donorId }
+      }
+    });
+
+    if (nameConflict) {
+      return res.status(400).json({ error: 'Donor with this name already exists' });
+    }
+
+    const updatedDonor = await prisma.donor.update({
+      where: { id: donorId },
+      data: {
+        name: name.trim(),
+        location: location || null,
+        contactInfo: contactInfo || null
+      }
+    });
+
+    res.json(updatedDonor);
+  } catch (err) {
+    console.error('Error updating donor:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/donors/:id', authenticateToken, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    const donorId = parseInt(req.params.id);
+
+    // Check if donor exists and belongs to user's organization
+    const existingDonor = await prisma.donor.findFirst({
+      where: {
+        id: donorId,
+        kitchenId: user.organizationId
+      }
+    });
+
+    if (!existingDonor) {
+      return res.status(404).json({ error: 'Donor not found' });
+    }
+
+    // Check if donor is being used in donations
+    const donations = await prisma.donation.findFirst({
+      where: { donorId }
+    });
+
+    if (donations) {
+      return res.status(400).json({ 
+        error: 'Cannot delete donor. They have existing donations.' 
+      });
+    }
+
+    await prisma.donor.delete({
+      where: { id: donorId }
+    });
+
+    res.json({ message: 'Donor deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting donor:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

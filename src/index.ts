@@ -190,9 +190,9 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
     // Get incoming_dollar_value for this organization
     const org = await prisma.organization.findUnique({
       where: { id: organizationId },
-      select: { incoming_dollar_value: true }
+      select: { incoming_dollar_value: true, mealsvalue: true }
     });
-    const incomingDollarValue = org?.incoming_dollar_value || 0;
+    const incomingDollarValue = Number(org?.incoming_dollar_value) || 0;
 
     // Get all donors for this organization
     const donors = await prisma.donor.findMany({
@@ -294,7 +294,8 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
       donorTotals,
       grandTotalWeight,
       grandTotalValue,
-      incomingDollarValue
+      incomingDollarValue,
+      mealsValue: Number(org?.mealsvalue) || 10
     });
   } catch (err) {
     console.error('Error fetching incoming stats:', err);
@@ -660,9 +661,20 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
       startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
       endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
     }
-    // Get all shift categories for this organization
+    
+    // Get organization's meals value
+    const org = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { mealsvalue: true }
+    });
+    const mealsValue = Number(org?.mealsvalue || 10);
+    
+    // Get all shift categories for this organization (excluding Collection)
     const categories = await prisma.shiftCategory.findMany({
-      where: { organizationId },
+      where: { 
+        organizationId,
+        name: { not: 'Collection' } // Exclude Collection shifts
+      },
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
@@ -713,46 +725,29 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: a
       if (!categoryShiftMeals[category]) categoryShiftMeals[category] = {};
       categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
     });
-    // Custom unit support - use weight ratios instead of noofmeals
-    let customWeightRatio = null;
-    let unitLabel = 'kg';
-    if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
-      const weighingCat = await prisma.weighingCategory.findFirst({
-        where: { organizationId, category: unit },
-        select: { kilogram_kg_: true, category: true }
-      });
-      if (weighingCat && weighingCat.kilogram_kg_ > 0) {
-        customWeightRatio = weighingCat.kilogram_kg_;
-        unitLabel = unit;
-      }
-    } else if (unit === 'lb' || unit === 'Pounds (lb)') {
-      customWeightRatio = 1 / 2.20462; // Convert kg to lb
-      unitLabel = 'lb';
-    }
-    // Generate Excel file: columns are [Category, Shift Name, Total Weight in Selected Unit]
+    // Generate Excel file: columns are [Category, Shift Name, Meals Served]
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Outgoing Stats');
-    worksheet.addRow(['Category', 'Shift Name', `Total Weight (${unitLabel})`]);
+    worksheet.addRow(['Category', 'Shift Name', 'Meals Served']);
+    
+    let totalMealsServed = 0;
+    
     categories.forEach((cat: any) => {
       const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {});
       shiftsInCat.forEach(([shiftName, total]) => {
-        let val = total; // total is already in kg
-        if (customWeightRatio) {
-          val = total / customWeightRatio; // Convert kg to custom unit
-        } else if (unitLabel === 'lb') {
-          val = total * 2.20462; // Convert kg to lb
-        }
-        worksheet.addRow([cat.name, shiftName, Math.round(val * 100) / 100]);
+        worksheet.addRow([cat.name, shiftName, total]);
+        totalMealsServed += total;
       });
       // Add category total row
       let catTotal = shiftsInCat.reduce((sum, [, total]) => sum + (total as number), 0);
-      if (customWeightRatio) {
-        catTotal = catTotal / customWeightRatio;
-      } else if (unitLabel === 'lb') {
-        catTotal = catTotal * 2.20462;
-      }
-      worksheet.addRow([cat.name, 'Category Total', Math.round(catTotal * 100) / 100]);
+      worksheet.addRow([cat.name, 'Category Total', catTotal]);
     });
+    
+    // Add summary rows
+    worksheet.addRow([]); // Empty row
+    worksheet.addRow(['TOTAL MEALS SERVED', '', totalMealsServed]);
+    worksheet.addRow(['EQUIVALENT VALUE', '', `$${(totalMealsServed * mealsValue).toFixed(2)}`]);
+    worksheet.addRow(['Meals Value (per meal)', '', `$${mealsValue.toFixed(2)}`]);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
     await workbook.xlsx.write(res);
@@ -1066,8 +1061,36 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: an
       });
       worksheet.addRow(headerRow);
 
-      // Data rows
-    tableData.forEach((row: any) => {
+      // Data rows for monthly aggregated view
+      displayData.forEach((row: any) => {
+        const rowArr = [
+          row.Month,
+          ...filteredCategoryNames.map(cat => convertWeight(row[cat] || 0)),
+          convertWeight(row.Total || 0)
+        ];
+        worksheet.addRow(rowArr);
+      });
+
+      // Monthly totals row
+      const monthlyTotalsRow = [
+        'Monthly Total',
+        ...filteredCategoryNames.map(cat => convertWeight(totals[cat] || 0)),
+        convertWeight(grandTotal)
+      ];
+      worksheet.addRow(monthlyTotalsRow);
+    } else {
+      // Specific month view (e.g., September)
+      const columns = ['Date', ...filteredCategoryNames, 'Total'];
+      
+      // Header row with unit labels
+      const headerRow = columns.map(col => {
+        if (col === 'Date' || col === 'Total') return col;
+        return `${col} (${getUnitLabel()})`;
+      });
+      worksheet.addRow(headerRow);
+
+      // Data rows for specific month
+      tableData.forEach((row: any) => {
         const rowArr = [
           formatDateForExcel(row.Date as string),
           ...filteredCategoryNames.map(cat => convertWeight(row[cat] || 0)),
@@ -1095,7 +1118,7 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req: an
   }
 });
 
-// Volunteer hours breakdown: dates from Shift.startTime, columns from ShiftCategory.name, dummy values for now
+// Volunteer hours breakdown: dates from Shift.startTime, columns from ShiftCategory.name
 app.get('/api/volunteer-hours', authenticateToken, async (req: any, res) => {
   try {
     const { month, year } = req.query;
@@ -1111,9 +1134,12 @@ app.get('/api/volunteer-hours', authenticateToken, async (req: any, res) => {
       startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
       endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
     }
-    // Get all shift categories for this organization
+    // Get all shift categories for this organization (excluding Collection)
     const categories = await prisma.shiftCategory.findMany({
-      where: { organizationId },
+      where: { 
+        organizationId,
+        name: { not: 'Collection' } // Exclude Collection shifts
+      },
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
@@ -1184,11 +1210,28 @@ app.get('/api/volunteer-hours', authenticateToken, async (req: any, res) => {
           // For each user, pick the signup with the longest duration
           let maxHours = 0;
           for (const entry of entries) {
-            let checkIn = entry.signup.checkIn ? new Date(entry.signup.checkIn) : new Date(entry.shift.startTime);
-            let checkOut = entry.signup.checkOut ? new Date(entry.signup.checkOut) : new Date(entry.shift.endTime);
+            // Only calculate hours if user checked in
+            if (!entry.signup.checkIn) continue;
+            
+            let checkIn = new Date(entry.signup.checkIn);
+            let checkOut;
+            
+            if (entry.signup.checkOut) {
+              // Scenario 1: Checked in and checked out
+              checkOut = new Date(entry.signup.checkOut);
+            } else {
+              // Scenario 2: Checked in but forgot to check out - use shift end time
+              checkOut = new Date(entry.shift.endTime);
+            }
+            
             let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
             if (isNaN(hours) || hours < 0) hours = 0;
-            if (hours < 1) hours = 1;
+            
+            // Minimum 1 hour if user checked in and checked out
+            if (entry.signup.checkOut && hours < 1) {
+              hours = 1;
+            }
+            
             if (hours > maxHours) {
               maxHours = hours;
             }
@@ -1239,9 +1282,12 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
       startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
       endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
     }
-    // Get all shift categories for this organization
+    // Get all shift categories for this organization (excluding Collection)
     const categories = await prisma.shiftCategory.findMany({
-      where: { organizationId },
+      where: { 
+        organizationId,
+        name: { not: 'Collection' } // Exclude Collection shifts
+      },
       orderBy: { id: 'asc' },
       select: { id: true, name: true }
     });
@@ -1283,7 +1329,7 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
       const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
       nextDay.setDate(nextDay.getDate() + 1);
       const date = nextDay.toISOString().split('T')[0];
-      let catKey = category.toLowerCase().includes('collection') ? `collection_${date}` : `${category}_${date}`;
+      let catKey = `${category}_${date}`;
       if (!dateCategoryUserMap[date]) dateCategoryUserMap[date] = {};
       if (!dateCategoryUserMap[date][catKey]) dateCategoryUserMap[date][catKey] = {};
       if (!dateCategoryUserMap[date][catKey][signup.userId]) dateCategoryUserMap[date][catKey][signup.userId] = [];
@@ -1293,17 +1339,34 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
     const dateCategoryHours: Record<string, Record<string, number>> = {};
     for (const date in dateCategoryUserMap) {
       for (const catKey in dateCategoryUserMap[date]) {
-        const category = catKey.startsWith('collection_') ? 'Collection' : catKey.split('_')[0];
+        const category = catKey.split('_')[0];
         let totalCatHours = 0;
         for (const userId in dateCategoryUserMap[date][catKey]) {
           const entries = dateCategoryUserMap[date][catKey][userId];
           let maxHours = 0;
           for (const entry of entries) {
-            let checkIn = entry.signup.checkIn ? new Date(entry.signup.checkIn) : new Date(entry.shift.startTime);
-            let checkOut = entry.signup.checkOut ? new Date(entry.signup.checkOut) : new Date(entry.shift.endTime);
+            // Only calculate hours if user checked in
+            if (!entry.signup.checkIn) continue;
+            
+            let checkIn = new Date(entry.signup.checkIn);
+            let checkOut;
+            
+            if (entry.signup.checkOut) {
+              // Scenario 1: Checked in and checked out
+              checkOut = new Date(entry.signup.checkOut);
+            } else {
+              // Scenario 2: Checked in but forgot to check out - use shift end time
+              checkOut = new Date(entry.shift.endTime);
+            }
+            
             let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
             if (isNaN(hours) || hours < 0) hours = 0;
-            if (hours < 1) hours = 1;
+            
+            // Minimum 1 hour if user checked in and checked out
+            if (entry.signup.checkOut && hours < 1) {
+              hours = 1;
+            }
+            
             if (hours > maxHours) {
               maxHours = hours;
             }
@@ -1587,10 +1650,16 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
     items.forEach((item: any) => {
       catIdToWeight[item.categoryId] = (catIdToWeight[item.categoryId] || 0) + item.weightKg;
     });
-    // Custom unit support
+    // Unit conversion support
     let customKg = null;
     let unitLabel = 'kg';
-    if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+    let conversionFactor = 1; // Default: no conversion (kg)
+    
+    if (unit === 'lb' || unit === 'Pounds (lb)') {
+      unitLabel = 'lb';
+      conversionFactor = 2.20462; // Convert kg to lb
+    } else if (unit && unit !== 'kg' && unit !== 'Kilograms (kg)') {
+      // Custom unit
       const weighingCat = await prisma.weighingCategory.findFirst({
         where: { organizationId, category: unit },
         select: { kilogram_kg_: true }
@@ -1598,6 +1667,7 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
       if (weighingCat && weighingCat.kilogram_kg_ > 0) {
         customKg = weighingCat.kilogram_kg_;
         unitLabel = unit;
+        conversionFactor = 1 / weighingCat.kilogram_kg_; // Convert kg to custom unit
       }
     }
     // Build result
@@ -1610,14 +1680,12 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
     worksheet.addRow(['Category', `Weight (${unitLabel})`]);
     let total = 0;
     result.forEach((row: any) => {
-      let weight = row.weight;
-      if (unit === 'Pounds (lb)') weight = Math.round(weight * 2.20462);
-      else if (customKg) weight = Math.round(weight / customKg);
-      else weight = Math.round(weight);
+      let weight = row.weight * conversionFactor; // Apply conversion factor
+      weight = Math.round(weight * 100) / 100; // Round to 2 decimal places
       total += weight;
       worksheet.addRow([row.name, weight]);
     });
-    worksheet.addRow(['Total', total]);
+    worksheet.addRow(['Total', Math.round(total * 100) / 100]);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="inventory-dashboard.xlsx"');
     await workbook.xlsx.write(res);
@@ -1629,97 +1697,6 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
 });
 
 // Export outgoing stats as Excel for dashboard
-app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req: any, res) => {
-  try {
-    const { month, year } = req.query;
-    const organizationId = req.user.organizationId;
-    let startDate: Date, endDate: Date;
-    if (!year) {
-      return res.status(400).json({ error: 'Year is required' });
-    }
-    if (!month || parseInt(month) === 0) {
-      startDate = new Date(parseInt(year), 0, 1);
-      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
-    } else {
-      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
-      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
-    }
-    // Get all shift categories for this organization
-    const categories = await prisma.shiftCategory.findMany({
-      where: { organizationId },
-      orderBy: { id: 'asc' },
-      select: { id: true, name: true }
-    });
-    const categoryIdToName: Record<number, string> = {};
-    categories.forEach((cat: any) => { categoryIdToName[cat.id] = cat.name; });
-    // Get all shifts for this organization and date range
-    const shifts = await prisma.shift.findMany({
-      where: {
-        organizationId,
-        startTime: {
-          gte: startDate,
-          lte: endDate
-        }
-      },
-      orderBy: { startTime: 'asc' },
-      select: { id: true, shiftCategoryId: true, startTime: true }
-    });
-    // Build a map: shiftId -> { date, categoryName }
-    const shiftIdToDate: Record<number, string> = {};
-    const shiftIdToCategory: Record<number, string> = {};
-    const dateSet = new Set<string>();
-    shifts.forEach((shift: any) => {
-      const dt = new Date(shift.startTime);
-      const parts = dt.toLocaleString('en-US', {
-        timeZone: 'America/Halifax',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit'
-      }).split('/');
-      // Get the date in Halifax timezone without the +1 day adjustment
-      const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-      nextDay.setDate(nextDay.getDate() + 1);
-      const date = nextDay.toISOString().split('T')[0];
-      shiftIdToDate[shift.id] = date;
-      shiftIdToCategory[shift.id] = categoryIdToName[shift.shiftCategoryId] || '';
-      dateSet.add(date);
-    });
-    // Get all shift signups for these shifts
-    const shiftIds = shifts.map((s: any) => s.id);
-    const signups = await prisma.shiftSignup.findMany({
-      where: { shiftId: { in: shiftIds } },
-      select: { shiftId: true, mealsServed: true }
-    });
-    // Build a map: date -> { categoryName -> totalMeals }
-    const dateCategoryMeals: Record<string, Record<string, number>> = {};
-    signups.forEach((signup: any) => {
-      const shiftId = signup.shiftId;
-      const date = shiftIdToDate[shiftId];
-      const category = shiftIdToCategory[shiftId];
-      if (!date || !category) return;
-      if (!dateCategoryMeals[date]) dateCategoryMeals[date] = {};
-      dateCategoryMeals[date][category] = (dateCategoryMeals[date][category] || 0) + (signup.mealsServed || 0);
-    });
-    // Prepare table data: one row per date, columns are categories
-    const sortedDates = Array.from(dateSet).sort();
-    const categoryNames = categories.map((c: any) => c.name);
-    // Generate Excel file
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Outgoing Stats');
-    worksheet.addRow(['Date', ...categoryNames]);
-    sortedDates.forEach(date => {
-      const row = [date, ...categoryNames.map(cat => dateCategoryMeals[date]?.[cat] || 0)];
-      worksheet.addRow(row);
-    });
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
-    await workbook.xlsx.write(res);
-    res.end();
-  } catch (err) {
-    console.error('Error exporting outgoing stats (dashboard):', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
 
 // Export volunteer summary as Excel for dashboard
 app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (req: any, res) => {
@@ -1737,7 +1714,7 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
       startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
       endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
     }
-    // Get all shift signups for this org in the date range
+    // Get all shift signups for this org in the date range (excluding Collection shifts)
     const signups = await prisma.shiftSignup.findMany({
       where: {
         Shift: {
@@ -1745,12 +1722,19 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
           startTime: {
             gte: startDate,
             lte: endDate
+          },
+          ShiftCategory: {
+            name: { not: 'Collection' } // Exclude Collection shifts
           }
         }
       },
       include: {
         User: true,
-        Shift: true
+        Shift: {
+          include: {
+            ShiftCategory: true
+          }
+        }
       }
     });
     // Group by user
@@ -1760,11 +1744,29 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
       if (!user) continue;
       const name = user.firstName + ' ' + user.lastName;
       const role = user.role;
-      // Calculate hours worked for this signup
-      let hours = 0;
-      if (signup.checkIn && signup.checkOut) {
-        hours = (new Date(signup.checkOut).getTime() - new Date(signup.checkIn).getTime()) / (1000 * 60 * 60);
+      
+      // Only calculate hours if user checked in
+      if (!signup.checkIn) continue;
+      
+      let checkIn = new Date(signup.checkIn);
+      let checkOut;
+      
+      if (signup.checkOut) {
+        // Scenario 1: Checked in and checked out
+        checkOut = new Date(signup.checkOut);
+      } else {
+        // Scenario 2: Checked in but forgot to check out - use shift end time
+        checkOut = new Date(signup.Shift.endTime);
       }
+      
+      let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+      if (isNaN(hours) || hours < 0) hours = 0;
+      
+      // Minimum 1 hour if user checked in and checked out
+      if (signup.checkOut && hours < 1) {
+        hours = 1;
+      }
+      
       if (!userMap[user.id]) {
         userMap[user.id] = { name, role, hours: 0 };
       }
@@ -1799,6 +1801,13 @@ app.get('/api/dashboard-summary/export', authenticateToken, async (req: any, res
   try {
     const { month, year, unit } = req.query;
     const organizationId = req.user.organizationId;
+
+    // Get organization data for meals value
+    const org = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { mealsvalue: true }
+    });
+    const mealsValue = Number(org?.mealsvalue) || 10; // Default to $10 if not set
 
     // Get date range based on month/year
     let startDate: Date, endDate: Date;
@@ -1915,7 +1924,7 @@ app.get('/api/dashboard-summary/export', authenticateToken, async (req: any, res
     });
 
     const totalDistributed = Object.values(categoryTotals).reduce((sum, val) => sum + val, 0);
-    const equivalentValue = totalWeightKg * 10; // $10 per kg equivalent (matching frontend)
+    const equivalentValue = totalWeightKg * mealsValue; // Use organization's meals value
 
     // Generate Excel file
     const workbook = new ExcelJS.Workbook();
@@ -2080,7 +2089,7 @@ app.get('/api/volunteers/summary', authenticateToken, async (req: any, res) => {
       endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
     }
 
-    // Get all shift signups for this org in the date range
+    // Get all shift signups for this org in the date range (excluding Collection shifts)
     const signups = await prisma.shiftSignup.findMany({
       where: {
         Shift: {
@@ -2088,12 +2097,19 @@ app.get('/api/volunteers/summary', authenticateToken, async (req: any, res) => {
           startTime: {
             gte: startDate,
             lte: endDate
+          },
+          ShiftCategory: {
+            name: { not: 'Collection' } // Exclude Collection shifts
           }
         }
       },
       include: {
         User: true,
-        Shift: true
+        Shift: {
+          include: {
+            ShiftCategory: true
+          }
+        }
       }
     });
 
@@ -2104,11 +2120,29 @@ app.get('/api/volunteers/summary', authenticateToken, async (req: any, res) => {
       if (!user) continue;
       const name = user.firstName + ' ' + user.lastName;
       const role = user.role;
-      // Calculate hours worked for this signup
-      let hours = 0;
-      if (signup.checkIn && signup.checkOut) {
-        hours = (new Date(signup.checkOut).getTime() - new Date(signup.checkIn).getTime()) / (1000 * 60 * 60);
+      
+      // Only calculate hours if user checked in
+      if (!signup.checkIn) continue;
+      
+      let checkIn = new Date(signup.checkIn);
+      let checkOut;
+      
+      if (signup.checkOut) {
+        // Scenario 1: Checked in and checked out
+        checkOut = new Date(signup.checkOut);
+      } else {
+        // Scenario 2: Checked in but forgot to check out - use shift end time
+        checkOut = new Date(signup.Shift.endTime);
       }
+      
+      let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+      if (isNaN(hours) || hours < 0) hours = 0;
+      
+      // Minimum 1 hour if user checked in and checked out
+      if (signup.checkOut && hours < 1) {
+        hours = 1;
+      }
+      
       if (!userMap[user.id]) {
         userMap[user.id] = { name, role, hours: 0 };
       }
@@ -2902,7 +2936,8 @@ app.get('/api/organizations', authenticateToken, async (req: any, res) => {
         name: true,
         address: true,
         email: true,
-        incoming_dollar_value: true
+        incoming_dollar_value: true,
+        mealsvalue: true
       }
     });
     res.json(organizations);
@@ -4382,7 +4417,10 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
 
     // Add incoming_dollar_value if provided
     if (incoming_dollar_value !== undefined) {
-      updateData.incoming_dollar_value = parseFloat(incoming_dollar_value);
+      const parsedValue = parseFloat(incoming_dollar_value);
+      if (!isNaN(parsedValue) && parsedValue >= 0) {
+        updateData.incoming_dollar_value = Math.round(parsedValue * 100) / 100;
+      }
     }
 
     const updatedOrganization = await prisma.organization.update({
@@ -4393,7 +4431,8 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
         name: true,
         address: true,
         email: true,
-        incoming_dollar_value: true
+        incoming_dollar_value: true,
+        mealsvalue: true
       }
     });
 
@@ -5234,6 +5273,9 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
     if (isNaN(parsedValue) || parsedValue < 0) {
       return res.status(400).json({ error: 'Invalid incoming dollar value. Must be a positive number.' });
     }
+    
+    // Round to 2 decimal places for consistency
+    const roundedValue = Math.round(parsedValue * 100) / 100;
 
     // Check if organization exists and user has access
     const reqAny = req as any;
@@ -5251,19 +5293,20 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
       return res.status(404).json({ error: 'Organization not found' });
     }
 
-    console.log(`Updating incoming_dollar_value for org ${organizationId} from ${existing.incoming_dollar_value} to ${parsedValue}`);
+    console.log(`Updating incoming_dollar_value for org ${organizationId} from ${existing.incoming_dollar_value} to ${roundedValue}`);
 
     // Update only the incoming_dollar_value
     const updatedOrganization = await prisma.organization.update({
       where: { id: organizationId },
       data: {
-        incoming_dollar_value: parsedValue
+        incoming_dollar_value: roundedValue
       },
       select: {
         id: true,
         name: true,
         address: true,
-        incoming_dollar_value: true
+        incoming_dollar_value: true,
+        mealsvalue: true
       }
     });
 
@@ -5272,6 +5315,69 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
   } catch (err) {
     console.error('Error updating incoming dollar value:', err);
     res.status(500).json({ error: 'Failed to update incoming dollar value' });
+  }
+});
+
+// Update organization meals value only
+app.put('/api/organizations/:id/meals-value', authenticateToken, async (req, res) => {
+  try {
+    const organizationId = parseInt(req.params.id);
+    if (!organizationId) {
+      return res.status(400).json({ error: 'Invalid organization ID' });
+    }
+
+    const { mealsvalue } = req.body;
+
+    // Validate mealsvalue
+    if (mealsvalue === undefined || mealsvalue === null) {
+      return res.status(400).json({ error: 'Meals value is required' });
+    }
+
+    const parsedValue = parseFloat(mealsvalue);
+    if (isNaN(parsedValue) || parsedValue < 0) {
+      return res.status(400).json({ error: 'Invalid meals value. Must be a positive number.' });
+    }
+    
+    // Round to 2 decimal places for consistency
+    const roundedValue = Math.round(parsedValue * 100) / 100;
+
+    // Check if organization exists and user has access
+    const reqAny = req as any;
+    const userOrganizationId = reqAny.user.organizationId;
+    
+    if (organizationId !== userOrganizationId) {
+      return res.status(403).json({ error: 'Access denied. You can only update your own organization.' });
+    }
+
+    const existing = await prisma.organization.findUnique({
+      where: { id: organizationId }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    console.log(`Updating mealsvalue for org ${organizationId} from ${existing.mealsvalue} to ${roundedValue}`);
+
+    // Update only the mealsvalue
+    const updatedOrganization = await prisma.organization.update({
+      where: { id: organizationId },
+      data: {
+        mealsvalue: roundedValue
+      },
+      select: {
+        id: true,
+        name: true,
+        address: true,
+        mealsvalue: true
+      }
+    });
+
+    console.log('Successfully updated mealsvalue:', updatedOrganization);
+    res.json(updatedOrganization);
+  } catch (err) {
+    console.error('Error updating meals value:', err);
+    res.status(500).json({ error: 'Failed to update meals value' });
   }
 });
 
@@ -5569,9 +5675,9 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
     // Get incoming dollar value for this organization
     const org = await prisma.organization.findUnique({
       where: { id: organizationId },
-      select: { incoming_dollar_value: true }
+      select: { incoming_dollar_value: true, mealsvalue: true }
     });
-    const incomingDollarValue = org?.incoming_dollar_value || 0;
+    const incomingDollarValue = Number(org?.incoming_dollar_value) || 0;
 
     // Get all donors for this organization
     const donors = await prisma.donor.findMany({

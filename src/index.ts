@@ -55,9 +55,37 @@ const createHalifaxDate = (year: number, month: number, day: number, hour: numbe
 };
 
 const app = express()
-const prisma = new PrismaClient()
+
+// Configure Prisma with connection pooling for better performance
+const prisma = new PrismaClient({
+  log: ['error', 'warn'],
+  // Connection pooling configuration for Neon
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL,
+    },
+  },
+})
+
 const port = process.env.PORT || 3001
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
+
+// Add request timeout middleware
+app.use((req, res, next) => {
+  // Set timeout to 30 seconds for all requests
+  req.setTimeout(30000, () => {
+    res.status(408).json({ error: 'Request timeout' });
+  });
+  next();
+});
+
+// Add response timeout
+app.use((req, res, next) => {
+  res.setTimeout(30000, () => {
+    res.status(408).json({ error: 'Response timeout' });
+  });
+  next();
+});
 
 // Add TypeScript declaration for global OTP store
 declare global {
@@ -73,6 +101,20 @@ declare global {
 // Middleware
 app.use(cors())
 app.use(express.json())
+
+// Health check endpoint for monitoring
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Keep-alive endpoint to prevent cold starts
+app.get('/keepalive', (req, res) => {
+  res.status(200).json({ status: 'alive' });
+});
 
 // Middleware to verify JWT token
 const authenticateToken = (req: Request, res: Response, next: NextFunction) => {

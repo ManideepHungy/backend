@@ -94,7 +94,7 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
 
 // Admin login endpoint
 app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, rememberMe } = req.body;
 
   try {
     // Find user by email
@@ -123,6 +123,9 @@ app.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Set token expiration based on Remember Me option
+    const tokenExpiration = rememberMe ? '30d' : '7d';
+    
     // Create JWT with user ID
     const token = jwt.sign({ 
       id: user.id,
@@ -130,9 +133,13 @@ app.post('/login', async (req, res) => {
       email: user.email, 
       role: user.role, 
       organizationId: user.organizationId 
-    }, JWT_SECRET, { expiresIn: '7d' });
+    }, JWT_SECRET, { expiresIn: tokenExpiration });
     
-    return res.json({ token });
+    return res.json({ 
+      token,
+      expiresIn: tokenExpiration,
+      rememberMe: rememberMe || false
+    });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -141,7 +148,7 @@ app.post('/login', async (req, res) => {
 
 // User login endpoint (for non-admin users)
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, rememberMe } = req.body;
 
   try {
     // Find user by email
@@ -165,6 +172,9 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Set token expiration based on Remember Me option
+    const tokenExpiration = rememberMe ? '30d' : '7d';
+
     // Create JWT with user ID
     const token = jwt.sign({ 
       id: user.id,
@@ -172,9 +182,13 @@ app.post('/api/login', async (req, res) => {
       email: user.email, 
       role: user.role, 
       organizationId: user.organizationId 
-    }, JWT_SECRET, { expiresIn: '7d' });
+    }, JWT_SECRET, { expiresIn: tokenExpiration });
     
-    return res.json({ token });
+    return res.json({ 
+      token,
+      expiresIn: tokenExpiration,
+      rememberMe: rememberMe || false
+    });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ error: 'Internal server error' });

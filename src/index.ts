@@ -7893,7 +7893,7 @@ app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (r
 // Contact form endpoint
 app.post('/api/contact', async (req, res) => {
   try {
-    const { name, email, description } = req.body;
+    const { name, email, description, type } = req.body;
 
     // Validate required fields
     if (!name || !email || !description) {
@@ -7909,26 +7909,32 @@ app.post('/api/contact', async (req, res) => {
       }
     });
 
+    // Determine if this is an issue report or regular contact form
+    const isIssueReport = type === 'issue_report' || description.includes('Issue Report Details:');
+    const recipientEmail = isIssueReport ? 'support@hungy.ca' : 'contact@hungy.ca';
+    const subjectPrefix = isIssueReport ? 'Issue Report' : 'Contact Form Submission';
+    const sourceText = isIssueReport ? 'Hungy Dashboard Report Issue feature' : 'Hungy website contact form';
+
     // Email content
     const mailOptions = {
       from: process.env.EMAIL_USER || 'your-email@gmail.com',
-      to: 'contact@hungy.ca',
-      subject: `New Contact Form Submission from ${name}`,
+      to: recipientEmail,
+      subject: `${subjectPrefix} from ${name}`,
       html: `
-        <h2>New Contact Form Submission</h2>
+        <h2>New ${subjectPrefix}</h2>
         <p><strong>Name:</strong> ${name}</p>
         <p><strong>Email:</strong> ${email}</p>
         <p><strong>Message:</strong></p>
         <p>${description.replace(/\n/g, '<br>')}</p>
         <hr>
-        <p><em>This message was sent from the Hungy website contact form.</em></p>
+        <p><em>This message was sent from the ${sourceText}.</em></p>
       `
     };
 
     // Send email
     await transporter.sendMail(mailOptions);
 
-    res.json({ message: 'Contact form submitted successfully' });
+    res.json({ message: `${subjectPrefix.toLowerCase()} submitted successfully` });
   } catch (error) {
     console.error('Error sending contact form email:', error);
     res.status(500).json({ error: 'Failed to send contact form' });

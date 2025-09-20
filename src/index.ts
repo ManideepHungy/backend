@@ -1283,9 +1283,9 @@ app.get('/api/volunteer-hours', authenticateToken, async (req: any, res) => {
             let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
             if (isNaN(hours) || hours < 0) hours = 0;
             
-            // Minimum 1 hour if user checked in and checked out
-            if (entry.signup.checkOut && hours < 1) {
-              hours = 1;
+            // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+            if (entry.signup.checkOut && hours <= 1) {
+              hours = 0; // Ignore counting if duration is 1 hour or less
             }
             
             if (hours > maxHours) {
@@ -1418,9 +1418,9 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req: any, res) 
             let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
             if (isNaN(hours) || hours < 0) hours = 0;
             
-            // Minimum 1 hour if user checked in and checked out
-            if (entry.signup.checkOut && hours < 1) {
-              hours = 1;
+            // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+            if (entry.signup.checkOut && hours <= 1) {
+              hours = 0; // Ignore counting if duration is 1 hour or less
             }
             
             if (hours > maxHours) {
@@ -1818,9 +1818,9 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
       let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
       if (isNaN(hours) || hours < 0) hours = 0;
       
-      // Minimum 1 hour if user checked in and checked out
-      if (signup.checkOut && hours < 1) {
-        hours = 1;
+      // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+      if (signup.checkOut && hours <= 1) {
+        hours = 0; // Ignore counting if duration is 1 hour or less
       }
       
       if (!userMap[user.id]) {
@@ -2194,9 +2194,9 @@ app.get('/api/volunteers/summary', authenticateToken, async (req: any, res) => {
       let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
       if (isNaN(hours) || hours < 0) hours = 0;
       
-      // Minimum 1 hour if user checked in and checked out
-      if (signup.checkOut && hours < 1) {
-        hours = 1;
+      // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+      if (signup.checkOut && hours <= 1) {
+        hours = 0; // Ignore counting if duration is 1 hour or less
       }
       
       if (!userMap[user.id]) {

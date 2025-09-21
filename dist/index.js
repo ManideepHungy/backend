@@ -68,12 +68,48 @@ const createHalifaxDate = (year, month, day, hour = 0, minute = 0) => {
     return halifaxDate;
 };
 const app = (0, express_1.default)();
-const prisma = new client_1.PrismaClient();
+// Configure Prisma with connection pooling for better performance
+const prisma = new client_1.PrismaClient({
+    log: ['error', 'warn'],
+    // Connection pooling configuration for Neon
+    datasources: {
+        db: {
+            url: process.env.DATABASE_URL,
+        },
+    },
+});
 const port = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecret';
+// Add request timeout middleware
+app.use((req, res, next) => {
+    // Set timeout to 30 seconds for all requests
+    req.setTimeout(30000, () => {
+        res.status(408).json({ error: 'Request timeout' });
+    });
+    next();
+});
+// Add response timeout
+app.use((req, res, next) => {
+    res.setTimeout(30000, () => {
+        res.status(408).json({ error: 'Response timeout' });
+    });
+    next();
+});
 // Middleware
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());
+// Health check endpoint for monitoring
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+// Keep-alive endpoint to prevent cold starts
+app.get('/keepalive', (req, res) => {
+    res.status(200).json({ status: 'alive' });
+});
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
@@ -91,7 +127,7 @@ const authenticateToken = (req, res, next) => {
 };
 // Admin login endpoint
 app.post('/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, rememberMe } = req.body;
     try {
         // Find user by email
         const user = await prisma.user.findUnique({ where: { email } });
@@ -115,6 +151,8 @@ app.post('/login', async (req, res) => {
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
+        // Set token expiration based on Remember Me option
+        const tokenExpiration = rememberMe ? '30d' : '7d';
         // Create JWT with user ID
         const token = jsonwebtoken_1.default.sign({
             id: user.id,
@@ -122,8 +160,12 @@ app.post('/login', async (req, res) => {
             email: user.email,
             role: user.role,
             organizationId: user.organizationId
-        }, JWT_SECRET, { expiresIn: '7d' });
-        return res.json({ token });
+        }, JWT_SECRET, { expiresIn: tokenExpiration });
+        return res.json({
+            token,
+            expiresIn: tokenExpiration,
+            rememberMe: rememberMe || false
+        });
     }
     catch (err) {
         console.error('Login error:', err);
@@ -132,7 +174,7 @@ app.post('/login', async (req, res) => {
 });
 // User login endpoint (for non-admin users)
 app.post('/api/login', async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password, rememberMe } = req.body;
     try {
         // Find user by email
         const user = await prisma.user.findUnique({ where: { email } });
@@ -152,6 +194,8 @@ app.post('/api/login', async (req, res) => {
         if (!validPassword) {
             return res.status(401).json({ error: 'Invalid email or password' });
         }
+        // Set token expiration based on Remember Me option
+        const tokenExpiration = rememberMe ? '30d' : '7d';
         // Create JWT with user ID
         const token = jsonwebtoken_1.default.sign({
             id: user.id,
@@ -159,8 +203,12 @@ app.post('/api/login', async (req, res) => {
             email: user.email,
             role: user.role,
             organizationId: user.organizationId
-        }, JWT_SECRET, { expiresIn: '7d' });
-        return res.json({ token });
+        }, JWT_SECRET, { expiresIn: tokenExpiration });
+        return res.json({
+            token,
+            expiresIn: tokenExpiration,
+            rememberMe: rememberMe || false
+        });
     }
     catch (err) {
         console.error('Login error:', err);
@@ -175,11 +223,11 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
         // Get incoming_dollar_value for this organization
         const org = await prisma.organization.findUnique({
             where: { id: organizationId },
-            select: { incoming_dollar_value: true }
+            select: { incoming_dollar_value: true, mealsvalue: true }
         });
-        const incomingDollarValue = (org === null || org === void 0 ? void 0 : org.incoming_dollar_value) || 0;
-        // Get all donors for this organization
-        const donors = await prisma.donor.findMany({
+        const incomingDollarValue = Number(org === null || org === void 0 ? void 0 : org.incoming_dollar_value) || 0;
+        // Get all donation locations for this organization
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             select: { id: true, name: true }
         });
@@ -203,7 +251,7 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
                 }
             },
             include: {
-                Donor: true
+                DonationLocation: true
             }
         });
         // Group donations by date and donor, using donation.summary as total weight
@@ -217,7 +265,7 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
                 month: '2-digit',
                 day: '2-digit'
             }).split('/').reverse().join('-');
-            const donorName = donation.Donor.name;
+            const donorName = donation.DonationLocation.name;
             const totalWeight = donation.summary;
             if (!acc[date]) {
                 acc[date] = {
@@ -235,11 +283,11 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
         }));
         // Calculate totals for each donor
         const donorTotals = {};
-        for (const donor of donors) {
-            donorTotals[donor.name] = { weight: 0, value: 0 };
+        for (const donationLocation of donationLocations) {
+            donorTotals[donationLocation.name] = { weight: 0, value: 0 };
         }
         for (const donation of donations) {
-            const donorName = donation.Donor.name;
+            const donorName = donation.DonationLocation.name;
             const totalWeight = donation.summary;
             if (donorTotals[donorName]) {
                 donorTotals[donorName].weight += totalWeight;
@@ -247,18 +295,18 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
             }
         }
         // Calculate totals
-        const totals = donors.reduce((acc, donor) => {
-            acc[donor.name] = tableData.reduce((sum, row) => sum + (row[donor.name] || 0), 0);
+        const totals = donationLocations.reduce((acc, donationLocation) => {
+            acc[donationLocation.name] = tableData.reduce((sum, row) => sum + (row[donationLocation.name] || 0), 0);
             return acc;
         }, {});
         // Calculate row totals
-        const rowTotals = tableData.map((row) => donors.reduce((sum, donor) => sum + (row[donor.name] || 0), 0));
+        const rowTotals = tableData.map((row) => donationLocations.reduce((sum, donationLocation) => sum + (row[donationLocation.name] || 0), 0));
         // Calculate grand totals
         const grandTotalWeight = Object.values(donorTotals).reduce((sum, d) => sum + d.weight, 0);
         const grandTotalValue = Object.values(donorTotals).reduce((sum, d) => sum + d.value, 0);
         const grandTotal = Object.values(totals).reduce((sum, val) => sum + val, 0);
         res.json({
-            donors: donors.map((d) => d.name),
+            donors: donationLocations.map((d) => d.name),
             tableData: tableData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
             totals,
             rowTotals,
@@ -266,7 +314,8 @@ app.get('/api/incoming-stats', authenticateToken, async (req, res) => {
             donorTotals,
             grandTotalWeight,
             grandTotalValue,
-            incomingDollarValue
+            incomingDollarValue,
+            mealsValue: Number(org === null || org === void 0 ? void 0 : org.mealsvalue) || 10
         });
     }
     catch (err) {
@@ -279,8 +328,8 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
     try {
         const { month, year, unit } = req.query;
         const organizationId = req.user.organizationId;
-        // Get all donors for this organization
-        const donors = await prisma.donor.findMany({
+        // Get all donation locations for this organization
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             select: { id: true, name: true }
         });
@@ -314,7 +363,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
                 }
             },
             include: {
-                Donor: true
+                DonationLocation: true
             }
         });
         // Group donations by date and donor, using donation.summary as total weight
@@ -328,7 +377,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
                 month: '2-digit',
                 day: '2-digit'
             }).split('/').reverse().join('-');
-            const donorName = donation.Donor.name;
+            const donorName = donation.DonationLocation.name;
             const totalWeight = donation.summary;
             if (!acc[date]) {
                 acc[date] = {
@@ -345,12 +394,12 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             ...row.donors
         }));
         // Calculate totals
-        const totals = donors.reduce((acc, donor) => {
-            acc[donor.name] = tableData.reduce((sum, row) => sum + (row[donor.name] || 0), 0);
+        const totals = donationLocations.reduce((acc, donationLocation) => {
+            acc[donationLocation.name] = tableData.reduce((sum, row) => sum + (row[donationLocation.name] || 0), 0);
             return acc;
         }, {});
         // Calculate row totals
-        const rowTotals = tableData.map((row) => donors.reduce((sum, donor) => sum + (row[donor.name] || 0), 0));
+        const rowTotals = tableData.map((row) => donationLocations.reduce((sum, donationLocation) => sum + (row[donationLocation.name] || 0), 0));
         // Calculate grand total
         const grandTotal = Object.values(totals).reduce((sum, val) => sum + val, 0);
         // Helper function to convert weight based on selected unit
@@ -399,8 +448,8 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             const monthMap = {};
             for (let m = 1; m <= 12; m++) {
                 monthMap[m] = { Month: monthNames[m - 1] };
-                donors.forEach(donor => {
-                    monthMap[m][donor.name] = 0;
+                donationLocations.forEach(donationLocation => {
+                    monthMap[m][donationLocation.name] = 0;
                 });
                 monthMap[m]['Total'] = 0;
             }
@@ -411,10 +460,10 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
                     return;
                 const m = d.getMonth() + 1;
                 let rowTotal = 0;
-                donors.forEach(donor => {
-                    if (typeof row[donor.name] === 'number') {
-                        const value = Number(row[donor.name]);
-                        monthMap[m][donor.name] += value;
+                donationLocations.forEach(donationLocation => {
+                    if (typeof row[donationLocation.name] === 'number') {
+                        const value = Number(row[donationLocation.name]);
+                        monthMap[m][donationLocation.name] += value;
                         rowTotal += value;
                     }
                 });
@@ -422,7 +471,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             });
             // Build display data for all months
             const displayData = Object.values(monthMap);
-            const columns = ['Month', ...donors.map(d => d.name), 'Total'];
+            const columns = ['Month', ...donationLocations.map(d => d.name), 'Total'];
             // Header row with unit labels
             const headerRow = columns.map(col => {
                 if (col === 'Month' || col === 'Total')
@@ -434,7 +483,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             displayData.forEach((row) => {
                 const rowArr = [
                     row.Month,
-                    ...donors.map(d => convertWeight(row[d.name] || 0)),
+                    ...donationLocations.map(d => convertWeight(row[d.name] || 0)),
                     convertWeight(row.Total || 0)
                 ];
                 worksheet.addRow(rowArr);
@@ -442,14 +491,14 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             // Yearly totals row
             const yearlyTotalsRow = [
                 'Yearly Total',
-                ...donors.map(d => convertWeight(totals[d.name] || 0)),
+                ...donationLocations.map(d => convertWeight(totals[d.name] || 0)),
                 convertWeight(grandTotal)
             ];
             worksheet.addRow(yearlyTotalsRow);
         }
         else {
             // Daily view for specific month
-            const columns = ['Date', ...donors.map(d => d.name), 'Total'];
+            const columns = ['Date', ...donationLocations.map(d => d.name), 'Total'];
             // Header row with unit labels
             const headerRow = columns.map(col => {
                 if (col === 'Date' || col === 'Total')
@@ -461,7 +510,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             tableData.forEach((row, i) => {
                 const rowArr = [
                     formatDateForExcel(row.date),
-                    ...donors.map(d => convertWeight(row[d.name] || 0)),
+                    ...donationLocations.map(d => convertWeight(row[d.name] || 0)),
                     convertWeight(rowTotals[i])
                 ];
                 worksheet.addRow(rowArr);
@@ -469,7 +518,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req, res) => {
             // Monthly totals row
             const monthlyTotalsRow = [
                 'Monthly Total',
-                ...donors.map(d => convertWeight(totals[d.name] || 0)),
+                ...donationLocations.map(d => convertWeight(totals[d.name] || 0)),
                 convertWeight(grandTotal)
             ];
             worksheet.addRow(monthlyTotalsRow);
@@ -614,9 +663,18 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req, r
             startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
             endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
         }
-        // Get all shift categories for this organization
+        // Get organization's meals value
+        const org = await prisma.organization.findUnique({
+            where: { id: organizationId },
+            select: { mealsvalue: true }
+        });
+        const mealsValue = Number((org === null || org === void 0 ? void 0 : org.mealsvalue) || 10);
+        // Get all shift categories for this organization (excluding Collection)
         const categories = await prisma.shiftCategory.findMany({
-            where: { organizationId },
+            where: {
+                organizationId,
+                name: { not: 'Collection' } // Exclude Collection shifts
+            },
             orderBy: { id: 'asc' },
             select: { id: true, name: true }
         });
@@ -671,49 +729,26 @@ app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req, r
                 categoryShiftMeals[category] = {};
             categoryShiftMeals[category][shiftName] = (categoryShiftMeals[category][shiftName] || 0) + (signup.mealsServed || 0);
         });
-        // Custom unit support - use weight ratios instead of noofmeals
-        let customWeightRatio = null;
-        let unitLabel = 'kg';
-        if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
-            const weighingCat = await prisma.weighingCategory.findFirst({
-                where: { organizationId, category: unit },
-                select: { kilogram_kg_: true, category: true }
-            });
-            if (weighingCat && weighingCat.kilogram_kg_ > 0) {
-                customWeightRatio = weighingCat.kilogram_kg_;
-                unitLabel = unit;
-            }
-        }
-        else if (unit === 'lb' || unit === 'Pounds (lb)') {
-            customWeightRatio = 1 / 2.20462; // Convert kg to lb
-            unitLabel = 'lb';
-        }
-        // Generate Excel file: columns are [Category, Shift Name, Total Weight in Selected Unit]
+        // Generate Excel file: columns are [Category, Shift Name, Meals Served]
         const workbook = new exceljs_1.default.Workbook();
         const worksheet = workbook.addWorksheet('Outgoing Stats');
-        worksheet.addRow(['Category', 'Shift Name', `Total Weight (${unitLabel})`]);
+        worksheet.addRow(['Category', 'Shift Name', 'Meals Served']);
+        let totalMealsServed = 0;
         categories.forEach((cat) => {
             const shiftsInCat = Object.entries(categoryShiftMeals[cat.name] || {});
             shiftsInCat.forEach(([shiftName, total]) => {
-                let val = total; // total is already in kg
-                if (customWeightRatio) {
-                    val = total / customWeightRatio; // Convert kg to custom unit
-                }
-                else if (unitLabel === 'lb') {
-                    val = total * 2.20462; // Convert kg to lb
-                }
-                worksheet.addRow([cat.name, shiftName, Math.round(val * 100) / 100]);
+                worksheet.addRow([cat.name, shiftName, total]);
+                totalMealsServed += total;
             });
             // Add category total row
             let catTotal = shiftsInCat.reduce((sum, [, total]) => sum + total, 0);
-            if (customWeightRatio) {
-                catTotal = catTotal / customWeightRatio;
-            }
-            else if (unitLabel === 'lb') {
-                catTotal = catTotal * 2.20462;
-            }
-            worksheet.addRow([cat.name, 'Category Total', Math.round(catTotal * 100) / 100]);
+            worksheet.addRow([cat.name, 'Category Total', catTotal]);
         });
+        // Add summary rows
+        worksheet.addRow([]); // Empty row
+        worksheet.addRow(['TOTAL MEALS SERVED', '', totalMealsServed]);
+        worksheet.addRow(['EQUIVALENT VALUE', '', `$${(totalMealsServed * mealsValue).toFixed(2)}`]);
+        worksheet.addRow(['Meals Value (per meal)', '', `$${mealsValue.toFixed(2)}`]);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
         await workbook.xlsx.write(res);
@@ -1010,7 +1045,34 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req, re
                 return `${col} (${getUnitLabel()})`;
             });
             worksheet.addRow(headerRow);
-            // Data rows
+            // Data rows for monthly aggregated view
+            displayData.forEach((row) => {
+                const rowArr = [
+                    row.Month,
+                    ...filteredCategoryNames.map(cat => convertWeight(row[cat] || 0)),
+                    convertWeight(row.Total || 0)
+                ];
+                worksheet.addRow(rowArr);
+            });
+            // Monthly totals row
+            const monthlyTotalsRow = [
+                'Monthly Total',
+                ...filteredCategoryNames.map(cat => convertWeight(totals[cat] || 0)),
+                convertWeight(grandTotal)
+            ];
+            worksheet.addRow(monthlyTotalsRow);
+        }
+        else {
+            // Specific month view (e.g., September)
+            const columns = ['Date', ...filteredCategoryNames, 'Total'];
+            // Header row with unit labels
+            const headerRow = columns.map(col => {
+                if (col === 'Date' || col === 'Total')
+                    return col;
+                return `${col} (${getUnitLabel()})`;
+            });
+            worksheet.addRow(headerRow);
+            // Data rows for specific month
             tableData.forEach((row) => {
                 const rowArr = [
                     formatDateForExcel(row.Date),
@@ -1037,7 +1099,7 @@ app.get('/api/outgoing-stats/filtered/export', authenticateToken, async (req, re
         res.status(500).json({ error: 'Internal server error' });
     }
 });
-// Volunteer hours breakdown: dates from Shift.startTime, columns from ShiftCategory.name, dummy values for now
+// Volunteer hours breakdown: dates from Shift.startTime, columns from ShiftCategory.name
 app.get('/api/volunteer-hours', authenticateToken, async (req, res) => {
     try {
         const { month, year } = req.query;
@@ -1054,9 +1116,12 @@ app.get('/api/volunteer-hours', authenticateToken, async (req, res) => {
             startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
             endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
         }
-        // Get all shift categories for this organization
+        // Get all shift categories for this organization (excluding Collection)
         const categories = await prisma.shiftCategory.findMany({
-            where: { organizationId },
+            where: {
+                organizationId,
+                name: { not: 'Collection' } // Exclude Collection shifts
+            },
             orderBy: { id: 'asc' },
             select: { id: true, name: true }
         });
@@ -1131,13 +1196,26 @@ app.get('/api/volunteer-hours', authenticateToken, async (req, res) => {
                     // For each user, pick the signup with the longest duration
                     let maxHours = 0;
                     for (const entry of entries) {
-                        let checkIn = entry.signup.checkIn ? new Date(entry.signup.checkIn) : new Date(entry.shift.startTime);
-                        let checkOut = entry.signup.checkOut ? new Date(entry.signup.checkOut) : new Date(entry.shift.endTime);
+                        // Only calculate hours if user checked in
+                        if (!entry.signup.checkIn)
+                            continue;
+                        let checkIn = new Date(entry.signup.checkIn);
+                        let checkOut;
+                        if (entry.signup.checkOut) {
+                            // Scenario 1: Checked in and checked out
+                            checkOut = new Date(entry.signup.checkOut);
+                        }
+                        else {
+                            // Scenario 2: Checked in but forgot to check out - use shift end time
+                            checkOut = new Date(entry.shift.endTime);
+                        }
                         let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
                         if (isNaN(hours) || hours < 0)
                             hours = 0;
-                        if (hours < 1)
-                            hours = 1;
+                        // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+                        if (entry.signup.checkOut && hours <= 1) {
+                            hours = 0; // Ignore counting if duration is 1 hour or less
+                        }
                         if (hours > maxHours) {
                             maxHours = hours;
                         }
@@ -1190,9 +1268,12 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req, res) => {
             startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
             endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
         }
-        // Get all shift categories for this organization
+        // Get all shift categories for this organization (excluding Collection)
         const categories = await prisma.shiftCategory.findMany({
-            where: { organizationId },
+            where: {
+                organizationId,
+                name: { not: 'Collection' } // Exclude Collection shifts
+            },
             orderBy: { id: 'asc' },
             select: { id: true, name: true }
         });
@@ -1235,7 +1316,7 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req, res) => {
             const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
             nextDay.setDate(nextDay.getDate() + 1);
             const date = nextDay.toISOString().split('T')[0];
-            let catKey = category.toLowerCase().includes('collection') ? `collection_${date}` : `${category}_${date}`;
+            let catKey = `${category}_${date}`;
             if (!dateCategoryUserMap[date])
                 dateCategoryUserMap[date] = {};
             if (!dateCategoryUserMap[date][catKey])
@@ -1248,19 +1329,32 @@ app.get('/api/volunteer-hours/export', authenticateToken, async (req, res) => {
         const dateCategoryHours = {};
         for (const date in dateCategoryUserMap) {
             for (const catKey in dateCategoryUserMap[date]) {
-                const category = catKey.startsWith('collection_') ? 'Collection' : catKey.split('_')[0];
+                const category = catKey.split('_')[0];
                 let totalCatHours = 0;
                 for (const userId in dateCategoryUserMap[date][catKey]) {
                     const entries = dateCategoryUserMap[date][catKey][userId];
                     let maxHours = 0;
                     for (const entry of entries) {
-                        let checkIn = entry.signup.checkIn ? new Date(entry.signup.checkIn) : new Date(entry.shift.startTime);
-                        let checkOut = entry.signup.checkOut ? new Date(entry.signup.checkOut) : new Date(entry.shift.endTime);
+                        // Only calculate hours if user checked in
+                        if (!entry.signup.checkIn)
+                            continue;
+                        let checkIn = new Date(entry.signup.checkIn);
+                        let checkOut;
+                        if (entry.signup.checkOut) {
+                            // Scenario 1: Checked in and checked out
+                            checkOut = new Date(entry.signup.checkOut);
+                        }
+                        else {
+                            // Scenario 2: Checked in but forgot to check out - use shift end time
+                            checkOut = new Date(entry.shift.endTime);
+                        }
                         let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
                         if (isNaN(hours) || hours < 0)
                             hours = 0;
-                        if (hours < 1)
-                            hours = 1;
+                        // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+                        if (entry.signup.checkOut && hours <= 1) {
+                            hours = 0; // Ignore counting if duration is 1 hour or less
+                        }
                         if (hours > maxHours) {
                             maxHours = hours;
                         }
@@ -1547,10 +1641,16 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
         items.forEach((item) => {
             catIdToWeight[item.categoryId] = (catIdToWeight[item.categoryId] || 0) + item.weightKg;
         });
-        // Custom unit support
+        // Unit conversion support
         let customKg = null;
         let unitLabel = 'kg';
-        if (unit && unit !== 'kg' && unit !== 'lb' && unit !== 'Kilograms (kg)' && unit !== 'Pounds (lb)') {
+        let conversionFactor = 1; // Default: no conversion (kg)
+        if (unit === 'lb' || unit === 'Pounds (lb)') {
+            unitLabel = 'lb';
+            conversionFactor = 2.20462; // Convert kg to lb
+        }
+        else if (unit && unit !== 'kg' && unit !== 'Kilograms (kg)') {
+            // Custom unit
             const weighingCat = await prisma.weighingCategory.findFirst({
                 where: { organizationId, category: unit },
                 select: { kilogram_kg_: true }
@@ -1558,6 +1658,7 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
             if (weighingCat && weighingCat.kilogram_kg_ > 0) {
                 customKg = weighingCat.kilogram_kg_;
                 unitLabel = unit;
+                conversionFactor = 1 / weighingCat.kilogram_kg_; // Convert kg to custom unit
             }
         }
         // Build result
@@ -1570,17 +1671,12 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
         worksheet.addRow(['Category', `Weight (${unitLabel})`]);
         let total = 0;
         result.forEach((row) => {
-            let weight = row.weight;
-            if (unit === 'Pounds (lb)')
-                weight = Math.round(weight * 2.20462);
-            else if (customKg)
-                weight = Math.round(weight / customKg);
-            else
-                weight = Math.round(weight);
+            let weight = row.weight * conversionFactor; // Apply conversion factor
+            weight = Math.round(weight * 100) / 100; // Round to 2 decimal places
             total += weight;
             worksheet.addRow([row.name, weight]);
         });
-        worksheet.addRow(['Total', total]);
+        worksheet.addRow(['Total', Math.round(total * 100) / 100]);
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', 'attachment; filename="inventory-dashboard.xlsx"');
         await workbook.xlsx.write(res);
@@ -1592,101 +1688,6 @@ app.get('/api/inventory-categories/export-dashboard', authenticateToken, async (
     }
 });
 // Export outgoing stats as Excel for dashboard
-app.get('/api/outgoing-stats/export-dashboard', authenticateToken, async (req, res) => {
-    try {
-        const { month, year } = req.query;
-        const organizationId = req.user.organizationId;
-        let startDate, endDate;
-        if (!year) {
-            return res.status(400).json({ error: 'Year is required' });
-        }
-        if (!month || parseInt(month) === 0) {
-            startDate = new Date(parseInt(year), 0, 1);
-            endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
-        }
-        else {
-            startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
-            endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
-        }
-        // Get all shift categories for this organization
-        const categories = await prisma.shiftCategory.findMany({
-            where: { organizationId },
-            orderBy: { id: 'asc' },
-            select: { id: true, name: true }
-        });
-        const categoryIdToName = {};
-        categories.forEach((cat) => { categoryIdToName[cat.id] = cat.name; });
-        // Get all shifts for this organization and date range
-        const shifts = await prisma.shift.findMany({
-            where: {
-                organizationId,
-                startTime: {
-                    gte: startDate,
-                    lte: endDate
-                }
-            },
-            orderBy: { startTime: 'asc' },
-            select: { id: true, shiftCategoryId: true, startTime: true }
-        });
-        // Build a map: shiftId -> { date, categoryName }
-        const shiftIdToDate = {};
-        const shiftIdToCategory = {};
-        const dateSet = new Set();
-        shifts.forEach((shift) => {
-            const dt = new Date(shift.startTime);
-            const parts = dt.toLocaleString('en-US', {
-                timeZone: 'America/Halifax',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).split('/');
-            // Get the date in Halifax timezone without the +1 day adjustment
-            const nextDay = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-            nextDay.setDate(nextDay.getDate() + 1);
-            const date = nextDay.toISOString().split('T')[0];
-            shiftIdToDate[shift.id] = date;
-            shiftIdToCategory[shift.id] = categoryIdToName[shift.shiftCategoryId] || '';
-            dateSet.add(date);
-        });
-        // Get all shift signups for these shifts
-        const shiftIds = shifts.map((s) => s.id);
-        const signups = await prisma.shiftSignup.findMany({
-            where: { shiftId: { in: shiftIds } },
-            select: { shiftId: true, mealsServed: true }
-        });
-        // Build a map: date -> { categoryName -> totalMeals }
-        const dateCategoryMeals = {};
-        signups.forEach((signup) => {
-            const shiftId = signup.shiftId;
-            const date = shiftIdToDate[shiftId];
-            const category = shiftIdToCategory[shiftId];
-            if (!date || !category)
-                return;
-            if (!dateCategoryMeals[date])
-                dateCategoryMeals[date] = {};
-            dateCategoryMeals[date][category] = (dateCategoryMeals[date][category] || 0) + (signup.mealsServed || 0);
-        });
-        // Prepare table data: one row per date, columns are categories
-        const sortedDates = Array.from(dateSet).sort();
-        const categoryNames = categories.map((c) => c.name);
-        // Generate Excel file
-        const workbook = new exceljs_1.default.Workbook();
-        const worksheet = workbook.addWorksheet('Outgoing Stats');
-        worksheet.addRow(['Date', ...categoryNames]);
-        sortedDates.forEach(date => {
-            const row = [date, ...categoryNames.map(cat => { var _a; return ((_a = dateCategoryMeals[date]) === null || _a === void 0 ? void 0 : _a[cat]) || 0; })];
-            worksheet.addRow(row);
-        });
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', `attachment; filename="outgoing-dashboard-${year}-${month}.xlsx"`);
-        await workbook.xlsx.write(res);
-        res.end();
-    }
-    catch (err) {
-        console.error('Error exporting outgoing stats (dashboard):', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
 // Export volunteer summary as Excel for dashboard
 app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (req, res) => {
     try {
@@ -1704,7 +1705,7 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
             startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
             endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
         }
-        // Get all shift signups for this org in the date range
+        // Get all shift signups for this org in the date range (excluding Collection shifts)
         const signups = await prisma.shiftSignup.findMany({
             where: {
                 Shift: {
@@ -1712,12 +1713,19 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
                     startTime: {
                         gte: startDate,
                         lte: endDate
+                    },
+                    ShiftCategory: {
+                        name: { not: 'Collection' } // Exclude Collection shifts
                     }
                 }
             },
             include: {
                 User: true,
-                Shift: true
+                Shift: {
+                    include: {
+                        ShiftCategory: true
+                    }
+                }
             }
         });
         // Group by user
@@ -1728,10 +1736,25 @@ app.get('/api/volunteers/summary/export-dashboard', authenticateToken, async (re
                 continue;
             const name = user.firstName + ' ' + user.lastName;
             const role = user.role;
-            // Calculate hours worked for this signup
-            let hours = 0;
-            if (signup.checkIn && signup.checkOut) {
-                hours = (new Date(signup.checkOut).getTime() - new Date(signup.checkIn).getTime()) / (1000 * 60 * 60);
+            // Only calculate hours if user checked in
+            if (!signup.checkIn)
+                continue;
+            let checkIn = new Date(signup.checkIn);
+            let checkOut;
+            if (signup.checkOut) {
+                // Scenario 1: Checked in and checked out
+                checkOut = new Date(signup.checkOut);
+            }
+            else {
+                // Scenario 2: Checked in but forgot to check out - use shift end time
+                checkOut = new Date(signup.Shift.endTime);
+            }
+            let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+            if (isNaN(hours) || hours < 0)
+                hours = 0;
+            // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+            if (signup.checkOut && hours <= 1) {
+                hours = 0; // Ignore counting if duration is 1 hour or less
             }
             if (!userMap[user.id]) {
                 userMap[user.id] = { name, role, hours: 0 };
@@ -1767,6 +1790,12 @@ app.get('/api/dashboard-summary/export', authenticateToken, async (req, res) => 
     try {
         const { month, year, unit } = req.query;
         const organizationId = req.user.organizationId;
+        // Get organization data for meals value
+        const org = await prisma.organization.findUnique({
+            where: { id: organizationId },
+            select: { mealsvalue: true }
+        });
+        const mealsValue = Number(org === null || org === void 0 ? void 0 : org.mealsvalue) || 10; // Default to $10 if not set
         // Get date range based on month/year
         let startDate, endDate;
         if (!year) {
@@ -1875,7 +1904,7 @@ app.get('/api/dashboard-summary/export', authenticateToken, async (req, res) => 
             categoryTotals[cat.category] = convertWeightForCategory(cat.total); // Converted values for display
         });
         const totalDistributed = Object.values(categoryTotals).reduce((sum, val) => sum + val, 0);
-        const equivalentValue = totalWeightKg * 10; // $10 per kg equivalent (matching frontend)
+        const equivalentValue = totalWeightKg * mealsValue; // Use organization's meals value
         // Generate Excel file
         const workbook = new exceljs_1.default.Workbook();
         const worksheet = workbook.addWorksheet('Dashboard Summary');
@@ -2018,7 +2047,7 @@ app.get('/api/volunteers/summary', authenticateToken, async (req, res) => {
             startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
             endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
         }
-        // Get all shift signups for this org in the date range
+        // Get all shift signups for this org in the date range (excluding Collection shifts)
         const signups = await prisma.shiftSignup.findMany({
             where: {
                 Shift: {
@@ -2026,12 +2055,19 @@ app.get('/api/volunteers/summary', authenticateToken, async (req, res) => {
                     startTime: {
                         gte: startDate,
                         lte: endDate
+                    },
+                    ShiftCategory: {
+                        name: { not: 'Collection' } // Exclude Collection shifts
                     }
                 }
             },
             include: {
                 User: true,
-                Shift: true
+                Shift: {
+                    include: {
+                        ShiftCategory: true
+                    }
+                }
             }
         });
         // Group by user
@@ -2042,10 +2078,25 @@ app.get('/api/volunteers/summary', authenticateToken, async (req, res) => {
                 continue;
             const name = user.firstName + ' ' + user.lastName;
             const role = user.role;
-            // Calculate hours worked for this signup
-            let hours = 0;
-            if (signup.checkIn && signup.checkOut) {
-                hours = (new Date(signup.checkOut).getTime() - new Date(signup.checkIn).getTime()) / (1000 * 60 * 60);
+            // Only calculate hours if user checked in
+            if (!signup.checkIn)
+                continue;
+            let checkIn = new Date(signup.checkIn);
+            let checkOut;
+            if (signup.checkOut) {
+                // Scenario 1: Checked in and checked out
+                checkOut = new Date(signup.checkOut);
+            }
+            else {
+                // Scenario 2: Checked in but forgot to check out - use shift end time
+                checkOut = new Date(signup.Shift.endTime);
+            }
+            let hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+            if (isNaN(hours) || hours < 0)
+                hours = 0;
+            // Rule 1: Only count if both check-in and check-out exist AND duration > 1 hour
+            if (signup.checkOut && hours <= 1) {
+                hours = 0; // Ignore counting if duration is 1 hour or less
             }
             if (!userMap[user.id]) {
                 userMap[user.id] = { name, role, hours: 0 };
@@ -2757,7 +2808,8 @@ app.get('/api/organizations', authenticateToken, async (req, res) => {
                 name: true,
                 address: true,
                 email: true,
-                incoming_dollar_value: true
+                incoming_dollar_value: true,
+                mealsvalue: true
             }
         });
         res.json(organizations);
@@ -2896,7 +2948,9 @@ app.put('/api/users/:id/approve', authenticateToken, async (req, res) => {
             }
         });
         // Create role-based permissions for approved user
-        const modules = await prisma.module.findMany();
+        const modules = await prisma.module.findMany({
+            where: { organizationId: updatedUser.organizationId }
+        });
         // Debug: Log all available modules
         console.log(`🔍 Available modules for ${updatedUser.role} user:`);
         modules.forEach(module => {
@@ -3000,7 +3054,9 @@ app.put('/api/users/:id/reset', authenticateToken, async (req, res) => {
 // Get all modules
 app.get('/api/modules', authenticateToken, async (req, res) => {
     try {
+        const organizationId = req.user.organizationId;
         const modules = await prisma.module.findMany({
+            where: { organizationId },
             orderBy: { name: 'asc' }
         });
         res.json(modules);
@@ -3121,6 +3177,7 @@ app.get('/api/users/:id/permissions', authenticateToken, async (req, res) => {
         }
         // Get all modules and user permissions
         const modules = await prisma.module.findMany({
+            where: { organizationId: user.organizationId },
             orderBy: { name: 'asc' }
         });
         const userPermissions = await prisma.userModulePermission.findMany({
@@ -3333,7 +3390,9 @@ app.put('/api/roles/:role/default-permissions', authenticateToken, async (req, r
 // Get all modules for role permission configuration
 app.get('/api/modules/for-role-permissions', authenticateToken, async (req, res) => {
     try {
+        const organizationId = req.user.organizationId;
         const modules = await prisma.module.findMany({
+            where: { organizationId },
             orderBy: { name: 'asc' }
         });
         res.json(modules);
@@ -3464,7 +3523,21 @@ app.get('/api/recurring-shifts', authenticateToken, async (req, res) => {
         const shifts = await prisma.recurringShift.findMany({
             where: { organizationId },
             include: {
-                ShiftCategory: true
+                ShiftCategory: true,
+                DefaultShiftUser: {
+                    where: { isActive: true },
+                    include: {
+                        User: {
+                            select: {
+                                id: true,
+                                firstName: true,
+                                lastName: true,
+                                email: true,
+                                phone: true
+                            }
+                        }
+                    }
+                }
             },
             orderBy: [
                 { dayOfWeek: 'asc' },
@@ -3939,6 +4012,666 @@ app.post('/api/shiftsignups', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to create shift signup' });
     }
 });
+// --- Default Shift Users Management Endpoints ---
+// Get default users for a recurring shift
+app.get('/api/recurring-shifts/:id/default-users', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const recurringShiftId = parseInt(req.params.id);
+        // Check if recurring shift exists and belongs to organization
+        const recurringShift = await prisma.recurringShift.findFirst({
+            where: { id: recurringShiftId, organizationId }
+        });
+        if (!recurringShift) {
+            return res.status(404).json({ error: 'Recurring shift not found' });
+        }
+        // Get default users for this recurring shift
+        const defaultUsers = await prisma.defaultShiftUser.findMany({
+            where: {
+                recurringShiftId,
+                organizationId,
+                isActive: true
+            },
+            include: {
+                User: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                        phone: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'asc' }
+        });
+        res.json({
+            defaultUsers: defaultUsers.map((du) => ({
+                id: du.id,
+                userId: du.userId,
+                user: du.User,
+                createdAt: du.createdAt
+            })),
+            totalCount: defaultUsers.length
+        });
+    }
+    catch (err) {
+        console.error('Error fetching default users:', err);
+        res.status(500).json({ error: 'Failed to fetch default users' });
+    }
+});
+// Add default user to recurring shift
+app.post('/api/recurring-shifts/:id/default-users', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const recurringShiftId = parseInt(req.params.id);
+        const { userId } = req.body;
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' });
+        }
+        // Check if recurring shift exists and belongs to organization
+        const recurringShift = await prisma.recurringShift.findFirst({
+            where: { id: recurringShiftId, organizationId }
+        });
+        if (!recurringShift) {
+            return res.status(404).json({ error: 'Recurring shift not found' });
+        }
+        // Check if user exists and belongs to organization
+        const user = await prisma.user.findFirst({
+            where: { id: userId, organizationId }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        // Check if user is already a default user for this shift
+        const existingDefault = await prisma.defaultShiftUser.findFirst({
+            where: {
+                recurringShiftId,
+                userId,
+                organizationId
+            }
+        });
+        if (existingDefault) {
+            return res.status(400).json({ error: 'User is already a default user for this shift' });
+        }
+        // Check if adding this user would exceed the shift slots
+        const currentDefaultCount = await prisma.defaultShiftUser.count({
+            where: {
+                recurringShiftId,
+                organizationId,
+                isActive: true
+            }
+        });
+        if (currentDefaultCount >= recurringShift.slots) {
+            return res.status(400).json({ error: 'Cannot add more default users than available slots' });
+        }
+        // Create default user assignment
+        const defaultUser = await prisma.defaultShiftUser.create({
+            data: {
+                recurringShiftId,
+                userId,
+                organizationId
+            },
+            include: {
+                User: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                        phone: true
+                    }
+                }
+            }
+        });
+        res.json({
+            success: true,
+            defaultUser: {
+                id: defaultUser.id,
+                userId: defaultUser.userId,
+                user: defaultUser.User,
+                createdAt: defaultUser.createdAt
+            }
+        });
+    }
+    catch (err) {
+        console.error('Error adding default user:', err);
+        res.status(500).json({ error: 'Failed to add default user' });
+    }
+});
+// Remove default user from recurring shift
+app.delete('/api/recurring-shifts/:id/default-users/:userId', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const recurringShiftId = parseInt(req.params.id);
+        const userId = parseInt(req.params.userId);
+        // Check if default user assignment exists
+        const existingDefault = await prisma.defaultShiftUser.findFirst({
+            where: {
+                recurringShiftId,
+                userId,
+                organizationId
+            }
+        });
+        if (!existingDefault) {
+            return res.status(404).json({ error: 'Default user assignment not found' });
+        }
+        // Delete the default user assignment
+        await prisma.defaultShiftUser.delete({
+            where: { id: existingDefault.id }
+        });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Error removing default user:', err);
+        res.status(500).json({ error: 'Failed to remove default user' });
+    }
+});
+// Bulk update default users for a recurring shift
+app.put('/api/recurring-shifts/:id/default-users', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const recurringShiftId = parseInt(req.params.id);
+        const { userIds } = req.body;
+        if (!Array.isArray(userIds)) {
+            return res.status(400).json({ error: 'userIds must be an array' });
+        }
+        // Check if recurring shift exists and belongs to organization
+        const recurringShift = await prisma.recurringShift.findFirst({
+            where: { id: recurringShiftId, organizationId }
+        });
+        if (!recurringShift) {
+            return res.status(404).json({ error: 'Recurring shift not found' });
+        }
+        // Validate that all users belong to the organization
+        const users = await prisma.user.findMany({
+            where: {
+                id: { in: userIds },
+                organizationId
+            }
+        });
+        if (users.length !== userIds.length) {
+            return res.status(400).json({ error: 'Some users do not belong to your organization' });
+        }
+        // Check if the number of users exceeds available slots
+        if (userIds.length > recurringShift.slots) {
+            return res.status(400).json({ error: 'Cannot assign more users than available slots' });
+        }
+        // Get current default users
+        const currentDefaults = await prisma.defaultShiftUser.findMany({
+            where: {
+                recurringShiftId,
+                organizationId
+            }
+        });
+        const currentUserIds = currentDefaults.map((du) => du.userId);
+        const toAdd = userIds.filter((id) => !currentUserIds.includes(id));
+        const toRemove = currentUserIds.filter((id) => !userIds.includes(id));
+        // Remove users who are no longer default
+        if (toRemove.length > 0) {
+            await prisma.defaultShiftUser.deleteMany({
+                where: {
+                    recurringShiftId,
+                    userId: { in: toRemove },
+                    organizationId
+                }
+            });
+        }
+        // Add new default users
+        if (toAdd.length > 0) {
+            await prisma.defaultShiftUser.createMany({
+                data: toAdd.map(userId => ({
+                    recurringShiftId,
+                    userId,
+                    organizationId
+                }))
+            });
+        }
+        res.json({
+            success: true,
+            added: toAdd.length,
+            removed: toRemove.length,
+            total: userIds.length
+        });
+    }
+    catch (err) {
+        console.error('Error updating default users:', err);
+        res.status(500).json({ error: 'Failed to update default users' });
+    }
+});
+// Create shift from recurring shift with default users auto-assigned
+app.post('/api/shifts/from-recurring/:recurringShiftId', authenticateToken, async (req, res) => {
+    var _a, _b, _c, _d, _e;
+    try {
+        const organizationId = req.user.organizationId;
+        const recurringShiftId = parseInt(req.params.recurringShiftId);
+        const { date, customSlots } = req.body;
+        console.log('🔍 CREATING SHIFT FROM RECURRING:', {
+            '=== REQUEST PARAMS ===': {
+                recurringShiftId,
+                date,
+                customSlots,
+                organizationId,
+                receivedDate: new Date(date),
+                receivedDateString: new Date(date).toDateString(),
+                receivedDateLocal: new Date(date).toLocaleDateString(),
+                receivedDateISO: new Date(date).toISOString()
+            },
+            '=== USER AUTH ===': {
+                user: req.user,
+                userId: (_a = req.user) === null || _a === void 0 ? void 0 : _a.id,
+                userOrganizationId: (_b = req.user) === null || _b === void 0 ? void 0 : _b.organizationId,
+                userEmail: (_c = req.user) === null || _c === void 0 ? void 0 : _c.email
+            }
+        });
+        if (!date) {
+            return res.status(400).json({ error: 'date is required' });
+        }
+        // Get recurring shift with default users
+        console.log('🔍 LOOKING FOR RECURRING SHIFT:', {
+            '=== QUERY PARAMS ===': {
+                recurringShiftId,
+                organizationId,
+                query: { id: recurringShiftId, organizationId }
+            },
+            '=== DATA TYPES ===': {
+                recurringShiftIdType: typeof recurringShiftId,
+                organizationIdType: typeof organizationId,
+                recurringShiftIdParsed: parseInt(req.params.recurringShiftId)
+            }
+        });
+        const recurringShift = await prisma.recurringShift.findFirst({
+            where: { id: recurringShiftId, organizationId },
+            include: {
+                DefaultShiftUser: {
+                    where: { isActive: true },
+                    include: { User: true }
+                },
+                ShiftCategory: true
+            }
+        });
+        console.log('Recurring shift query result:', recurringShift ? {
+            id: recurringShift.id,
+            name: recurringShift.name,
+            organizationId: recurringShift.organizationId,
+            defaultUsersCount: ((_d = recurringShift.DefaultShiftUser) === null || _d === void 0 ? void 0 : _d.length) || 0
+        } : 'Not found');
+        if (!recurringShift) {
+            console.log('Recurring shift not found:', { recurringShiftId, organizationId });
+            return res.status(404).json({ error: 'Recurring shift not found' });
+        }
+        console.log('Found recurring shift:', {
+            id: recurringShift.id,
+            name: recurringShift.name,
+            defaultUsersCount: ((_e = recurringShift.DefaultShiftUser) === null || _e === void 0 ? void 0 : _e.length) || 0
+        });
+        // Calculate start and end times for the specific date
+        // Parse date components directly to avoid timezone conversion issues
+        const [year, month, day] = date.split('-').map(Number);
+        const targetDate = new Date(year, month - 1, day); // month is 0-indexed in Date constructor
+        console.log('Date calculation:', {
+            inputDate: date,
+            parsedComponents: { year, month, day },
+            targetDate: targetDate.toISOString(),
+            targetDateLocal: targetDate.toLocaleDateString(),
+            targetDateString: targetDate.toDateString(),
+            recurringStartTime: recurringShift.startTime.toISOString(),
+            recurringEndTime: recurringShift.endTime.toISOString()
+        });
+        const startTime = new Date(targetDate);
+        startTime.setHours(new Date(recurringShift.startTime).getHours(), new Date(recurringShift.startTime).getMinutes(), 0, 0);
+        const endTime = new Date(targetDate);
+        endTime.setHours(new Date(recurringShift.endTime).getHours(), new Date(recurringShift.endTime).getMinutes(), 0, 0);
+        console.log('Calculated times:', {
+            startTime: startTime.toISOString(),
+            startTimeLocal: startTime.toLocaleDateString(),
+            startTimeString: startTime.toDateString(),
+            endTime: endTime.toISOString(),
+            endTimeLocal: endTime.toLocaleDateString(),
+            endTimeString: endTime.toDateString()
+        });
+        // Check if shift already exists for this date
+        console.log('Checking for existing shift:', {
+            recurringShiftId,
+            organizationId,
+            startTime: startTime.toISOString(),
+            searchRange: {
+                from: new Date(startTime.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+                to: new Date(startTime.getTime() + 24 * 60 * 60 * 1000).toISOString()
+            }
+        });
+        const existingShift = await prisma.shift.findFirst({
+            where: {
+                recurringShiftId,
+                organizationId,
+                startTime: {
+                    gte: new Date(startTime.getTime() - 24 * 60 * 60 * 1000), // 24 hours before
+                    lte: new Date(startTime.getTime() + 24 * 60 * 60 * 1000) // 24 hours after
+                }
+            }
+        });
+        console.log('Existing shift check result:', existingShift ? {
+            id: existingShift.id,
+            name: existingShift.name,
+            startTime: existingShift.startTime.toISOString()
+        } : 'No existing shift found');
+        if (existingShift) {
+            console.log('Returning existing shift instead of creating new one');
+            // Get default users and absences for the existing shift
+            const defaultUsers = recurringShift.DefaultShiftUser;
+            const assignedUsers = [];
+            const absentUsers = [];
+            for (const defaultUser of defaultUsers) {
+                // Check if user has absence for this specific shift
+                const absence = await prisma.shiftAbsence.findFirst({
+                    where: {
+                        userId: defaultUser.userId,
+                        shiftId: existingShift.id,
+                        isApproved: true
+                    }
+                });
+                if (!absence) {
+                    // User is available - check if they're already signed up
+                    const existingSignup = await prisma.shiftSignup.findFirst({
+                        where: {
+                            userId: defaultUser.userId,
+                            shiftId: existingShift.id
+                        }
+                    });
+                    if (!existingSignup) {
+                        // User is not signed up, so they're a default user not yet assigned
+                        assignedUsers.push(defaultUser.User);
+                    }
+                }
+                else {
+                    // User is absent - log it
+                    absentUsers.push({
+                        user: defaultUser.User,
+                        absence: absence
+                    });
+                }
+            }
+            return res.json({
+                shift: existingShift,
+                assignedUsers,
+                absentUsers,
+                totalDefaultUsers: defaultUsers.length,
+                actuallyAssigned: assignedUsers.length,
+                availableSlots: existingShift.slots - assignedUsers.length,
+                message: 'Using existing shift for this occurrence'
+            });
+        }
+        // Create shift instance
+        console.log('Creating shift with data:', {
+            name: recurringShift.name,
+            shiftCategoryId: recurringShift.shiftCategoryId,
+            startTime: startTime.toISOString(),
+            endTime: endTime.toISOString(),
+            location: recurringShift.location,
+            slots: customSlots || recurringShift.slots,
+            organizationId,
+            recurringShiftId
+        });
+        const shift = await prisma.shift.create({
+            data: {
+                name: recurringShift.name,
+                shiftCategoryId: recurringShift.shiftCategoryId,
+                startTime,
+                endTime,
+                location: recurringShift.location,
+                slots: customSlots || recurringShift.slots,
+                organizationId,
+                recurringShiftId,
+                isActive: true
+            },
+            include: { ShiftCategory: true }
+        });
+        console.log('Shift created successfully:', {
+            shiftId: shift.id,
+            shiftName: shift.name,
+            storedStartTime: shift.startTime.toISOString(),
+            storedStartTimeLocal: shift.startTime.toLocaleDateString(),
+            storedStartTimeString: shift.startTime.toDateString()
+        });
+        // Auto-assign default users (check for absences)
+        const defaultUsers = recurringShift.DefaultShiftUser;
+        const assignedUsers = [];
+        const absentUsers = [];
+        for (const defaultUser of defaultUsers) {
+            // Check if user has absence for this specific shift
+            const absence = await prisma.shiftAbsence.findFirst({
+                where: {
+                    userId: defaultUser.userId,
+                    shiftId: shift.id,
+                    isApproved: true
+                }
+            });
+            if (!absence) {
+                // User is available - create signup
+                await prisma.shiftSignup.create({
+                    data: {
+                        userId: defaultUser.userId,
+                        shiftId: shift.id,
+                        checkIn: null,
+                        checkOut: null,
+                        mealsServed: 0
+                    }
+                });
+                assignedUsers.push(defaultUser.User);
+            }
+            else {
+                // User is absent - log it
+                absentUsers.push({
+                    user: defaultUser.User,
+                    absence: absence
+                });
+            }
+        }
+        res.json({
+            shift,
+            assignedUsers,
+            absentUsers,
+            totalDefaultUsers: defaultUsers.length,
+            actuallyAssigned: assignedUsers.length,
+            availableSlots: (customSlots || recurringShift.slots) - assignedUsers.length
+        });
+    }
+    catch (err) {
+        console.error('Error creating shift from recurring:', err);
+        console.error('Error details:', {
+            message: err.message,
+            stack: err.stack,
+            recurringShiftId: req.params.recurringShiftId,
+            body: req.body
+        });
+        res.status(500).json({
+            error: 'Failed to create shift from recurring',
+            details: err.message
+        });
+    }
+});
+// --- Shift Absence Management Endpoints ---
+// Get absences for a specific shift
+app.get('/api/shifts/:shiftId/absences', authenticateToken, async (req, res) => {
+    var _a;
+    try {
+        const organizationId = req.user.organizationId;
+        const shiftId = parseInt(req.params.shiftId);
+        // Check if shift exists and belongs to organization
+        const shift = await prisma.shift.findFirst({
+            where: { id: shiftId, organizationId },
+            include: {
+                RecurringShift: {
+                    include: {
+                        DefaultShiftUser: {
+                            include: { User: true }
+                        }
+                    }
+                }
+            }
+        });
+        if (!shift) {
+            return res.status(404).json({ error: 'Shift not found' });
+        }
+        // Get absences for this shift
+        const absences = await prisma.shiftAbsence.findMany({
+            where: { shiftId, organizationId },
+            include: {
+                User: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json({
+            absences,
+            defaultUsers: ((_a = shift.RecurringShift) === null || _a === void 0 ? void 0 : _a.DefaultShiftUser) || []
+        });
+    }
+    catch (err) {
+        console.error('Error fetching shift absences:', err);
+        res.status(500).json({ error: 'Failed to fetch shift absences' });
+    }
+});
+// Request absence for specific occurrence
+app.post('/api/shifts/:shiftId/absences', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const shiftId = parseInt(req.params.shiftId);
+        const { userId, absenceType = 'UNAVAILABLE', reason, isApproved = false } = req.body;
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' });
+        }
+        // Check if shift exists and belongs to organization
+        const shift = await prisma.shift.findFirst({
+            where: { id: shiftId, organizationId },
+            include: { RecurringShift: true }
+        });
+        if (!shift) {
+            return res.status(404).json({ error: 'Shift not found' });
+        }
+        // Check if user exists and belongs to organization
+        const user = await prisma.user.findFirst({
+            where: { id: userId, organizationId }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        // Check if absence already exists
+        const existingAbsence = await prisma.shiftAbsence.findFirst({
+            where: { userId, shiftId, organizationId }
+        });
+        if (existingAbsence) {
+            return res.status(400).json({ error: 'Absence already requested for this shift' });
+        }
+        // Create absence request
+        const absence = await prisma.shiftAbsence.create({
+            data: {
+                userId,
+                shiftId,
+                recurringShiftId: null, // Don't reference recurringShiftId - absences are occurrence-specific
+                organizationId,
+                absenceType,
+                reason,
+                isApproved
+            },
+            include: {
+                User: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true
+                    }
+                }
+            }
+        });
+        res.json({ absence });
+    }
+    catch (err) {
+        console.error('Error creating absence request:', err);
+        res.status(500).json({ error: 'Failed to create absence request' });
+    }
+});
+// Approve/Reject absence
+app.put('/api/shifts/:shiftId/absences/:absenceId', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const shiftId = parseInt(req.params.shiftId);
+        const absenceId = parseInt(req.params.absenceId);
+        const { isApproved, reason } = req.body;
+        const approverId = req.user.id;
+        // Check if absence exists and belongs to organization
+        const absence = await prisma.shiftAbsence.findFirst({
+            where: {
+                id: absenceId,
+                shiftId,
+                organizationId
+            }
+        });
+        if (!absence) {
+            return res.status(404).json({ error: 'Absence not found' });
+        }
+        // Update absence
+        const updatedAbsence = await prisma.shiftAbsence.update({
+            where: { id: absenceId },
+            data: {
+                isApproved,
+                approvedAt: isApproved ? new Date() : null,
+                approvedBy: isApproved ? approverId : null,
+                reason: reason || absence.reason
+            },
+            include: {
+                User: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true
+                    }
+                }
+            }
+        });
+        res.json({ absence: updatedAbsence });
+    }
+    catch (err) {
+        console.error('Error updating absence:', err);
+        res.status(500).json({ error: 'Failed to update absence' });
+    }
+});
+// Cancel absence request
+app.delete('/api/shifts/:shiftId/absences/:absenceId', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = req.user.organizationId;
+        const shiftId = parseInt(req.params.shiftId);
+        const absenceId = parseInt(req.params.absenceId);
+        // Check if absence exists and belongs to organization
+        const absence = await prisma.shiftAbsence.findFirst({
+            where: {
+                id: absenceId,
+                shiftId,
+                organizationId
+            }
+        });
+        if (!absence) {
+            return res.status(404).json({ error: 'Absence not found' });
+        }
+        // Delete absence
+        await prisma.shiftAbsence.delete({
+            where: { id: absenceId }
+        });
+        res.json({ success: true });
+    }
+    catch (err) {
+        console.error('Error deleting absence:', err);
+        res.status(500).json({ error: 'Failed to delete absence' });
+    }
+});
 // --- Organization CRUD Operations ---
 // Get all organizations
 app.get('/api/organizations', authenticateToken, async (req, res) => {
@@ -4095,7 +4828,10 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
         };
         // Add incoming_dollar_value if provided
         if (incoming_dollar_value !== undefined) {
-            updateData.incoming_dollar_value = parseFloat(incoming_dollar_value);
+            const parsedValue = parseFloat(incoming_dollar_value);
+            if (!isNaN(parsedValue) && parsedValue >= 0) {
+                updateData.incoming_dollar_value = Math.round(parsedValue * 100) / 100;
+            }
         }
         const updatedOrganization = await prisma.organization.update({
             where: { id: organizationId },
@@ -4105,7 +4841,8 @@ app.put('/api/organizations/:id', authenticateToken, async (req, res) => {
                 name: true,
                 address: true,
                 email: true,
-                incoming_dollar_value: true
+                incoming_dollar_value: true,
+                mealsvalue: true
             }
         });
         res.json(updatedOrganization);
@@ -4133,7 +4870,7 @@ app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
         await prisma.$transaction([
             prisma.donation.deleteMany({ where: { organizationId } }),
             prisma.donationCategory.deleteMany({ where: { organizationId } }),
-            prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+            prisma.donationLocation.deleteMany({ where: { kitchenId: organizationId } }),
             prisma.recurringShift.deleteMany({ where: { organizationId } }),
             prisma.shift.deleteMany({ where: { organizationId } }),
             prisma.shiftCategory.deleteMany({ where: { organizationId } }),
@@ -4233,21 +4970,6 @@ app.delete('/api/shiftsignups/:id', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to delete shift signup' });
     }
 });
-// Get all donors for the authenticated organization
-app.get('/api/donors', authenticateToken, async (req, res) => {
-    try {
-        const organizationId = req.user.organizationId;
-        const donors = await prisma.donor.findMany({
-            where: { kitchenId: organizationId },
-            select: { id: true, name: true }
-        });
-        res.json(donors);
-    }
-    catch (err) {
-        console.error('Error fetching donors:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
 // Add GET endpoint to fetch shift signups by shiftId
 app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
     try {
@@ -4268,6 +4990,7 @@ app.get('/api/shiftsignups', authenticateToken, async (req, res) => {
 });
 // --- New endpoint: Get scheduled and unscheduled users for a shift ---
 app.get('/api/shift-employees', authenticateToken, async (req, res) => {
+    var _a;
     try {
         const reqAny = req;
         const { shiftId } = req.query;
@@ -4277,10 +5000,35 @@ app.get('/api/shift-employees', authenticateToken, async (req, res) => {
         // Get the shift
         const shift = await prisma.shift.findFirst({
             where: { id: Number(shiftId), organizationId },
-            include: { ShiftSignup: true }
+            include: {
+                ShiftSignup: true,
+                RecurringShift: {
+                    include: {
+                        DefaultShiftUser: {
+                            include: { User: true }
+                        }
+                    }
+                }
+            }
         });
         if (!shift)
             return res.status(404).json({ error: 'Shift not found' });
+        // Get absences for this shift
+        const absences = await prisma.shiftAbsence.findMany({
+            where: {
+                shiftId: Number(shiftId),
+                isApproved: true
+            }
+        });
+        // Get default users for this shift (if it's a recurring shift)
+        let defaultUsers = [];
+        if ((_a = shift.RecurringShift) === null || _a === void 0 ? void 0 : _a.DefaultShiftUser) {
+            defaultUsers = shift.RecurringShift.DefaultShiftUser.map(du => ({
+                id: du.userId,
+                name: `${du.User.firstName} ${du.User.lastName}`,
+                isDefault: true
+            }));
+        }
         // Get all users in the org
         const users = await prisma.user.findMany({
             where: { organizationId },
@@ -4291,22 +5039,36 @@ app.get('/api/shift-employees', authenticateToken, async (req, res) => {
             where: { shiftId: Number(shiftId) },
             include: { User: true }
         });
-        // Scheduled users
+        // Scheduled users (including default users who haven't signed up)
         const scheduled = signups.map(signup => ({
             id: signup.User.id,
             name: signup.User.firstName + ' ' + signup.User.lastName,
-            signupId: signup.id
+            signupId: signup.id,
+            isDefault: defaultUsers.some(du => du.id === signup.User.id)
         }));
-        // Unscheduled users
+        // Get absent user IDs
+        const absentUserIds = new Set(absences.map(a => a.userId));
+        // Add default users who haven't signed up yet and are not absent
         const scheduledIds = new Set(scheduled.map(u => u.id));
+        const defaultUsersNotSignedUp = defaultUsers.filter(du => !scheduledIds.has(du.id) && !absentUserIds.has(du.id));
+        // Combine scheduled users with default users who haven't signed up and are not absent
+        const allScheduledUsers = [...scheduled, ...defaultUsersNotSignedUp];
+        // Unscheduled users (excluding default users and absent users)
+        const defaultUserIds = new Set(defaultUsers.map(du => du.id));
         const unscheduled = users
-            .filter(u => !scheduledIds.has(u.id))
+            .filter(u => !scheduledIds.has(u.id) && !defaultUserIds.has(u.id) && !absentUserIds.has(u.id))
             .map(u => ({ id: u.id, name: u.firstName + ' ' + u.lastName }));
+        // Calculate available slots: total slots - present default users - regular signups
+        const presentDefaultUsers = defaultUsers.filter(du => !absentUserIds.has(du.id)).length;
+        const regularSignups = scheduled.filter(s => !s.isDefault).length;
+        const availableSlots = Math.max(0, shift.slots - presentDefaultUsers - regularSignups);
         res.json({
-            scheduled,
+            scheduled: allScheduledUsers,
             unscheduled,
             slots: shift.slots,
-            booked: scheduled.length
+            booked: allScheduledUsers.length,
+            defaultUsers: presentDefaultUsers,
+            availableSlots: availableSlots
         });
     }
     catch (err) {
@@ -4334,8 +5096,8 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req, re
             startDate = new Date(yearNum, monthNum - 1, 1);
             endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
         }
-        // Fetch donors
-        const donors = await prisma.donor.findMany({
+        // Fetch donation locations
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             select: { id: true, name: true }
         });
@@ -4364,19 +5126,19 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req, re
                     }
                 }
             },
-            select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+            select: { categoryId: true, weightKg: true, Donation: { select: { donationLocationId: true } } }
         });
         // Build donor x category table
         const donorIdToName = {};
-        donors.forEach(d => { donorIdToName[d.id] = d.name; });
+        donationLocations.forEach(d => { donorIdToName[d.id] = d.name; });
         const catIdToName = {};
         categories.forEach(c => { catIdToName[c.id] = c.name; });
-        // Initialize table: donorName -> categoryName -> 0
+        // Initialize table: donationLocationName -> categoryName -> 0
         const table = {};
-        donors.forEach(donor => {
-            table[donor.name] = {};
+        donationLocations.forEach(donationLocation => {
+            table[donationLocation.name] = {};
             categories.forEach(cat => {
-                table[donor.name][cat.name] = 0;
+                table[donationLocation.name][cat.name] = 0;
             });
         });
         // Get weighing categories for custom unit conversion
@@ -4391,7 +5153,7 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req, re
         });
         // Fill table with actual weights (store raw kg values)
         items.forEach(item => {
-            const donorName = donorIdToName[Number(item.Donation.donorId)];
+            const donorName = donorIdToName[Number(item.Donation.donationLocationId)];
             const catName = catIdToName[Number(item.categoryId)];
             if (donorName && catName) {
                 table[donorName][catName] += item.weightKg;
@@ -4418,14 +5180,14 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req, re
         };
         // Convert table values to display units
         const convertedTable = {};
-        donors.forEach(donor => {
-            convertedTable[donor.name] = {};
+        donationLocations.forEach(donationLocation => {
+            convertedTable[donationLocation.name] = {};
             categories.forEach(cat => {
-                convertedTable[donor.name][cat.name] = convertWeight(table[donor.name][cat.name] || 0);
+                convertedTable[donationLocation.name][cat.name] = convertWeight(table[donationLocation.name][cat.name] || 0);
             });
         });
         res.json({
-            donors: donors.map(d => d.name),
+            donors: donationLocations.map(d => d.name),
             categories: categories.map(c => c.name),
             table: convertedTable
         });
@@ -4883,6 +5645,8 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
         if (isNaN(parsedValue) || parsedValue < 0) {
             return res.status(400).json({ error: 'Invalid incoming dollar value. Must be a positive number.' });
         }
+        // Round to 2 decimal places for consistency
+        const roundedValue = Math.round(parsedValue * 100) / 100;
         // Check if organization exists and user has access
         const reqAny = req;
         const userOrganizationId = reqAny.user.organizationId;
@@ -4895,18 +5659,19 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
         if (!existing) {
             return res.status(404).json({ error: 'Organization not found' });
         }
-        console.log(`Updating incoming_dollar_value for org ${organizationId} from ${existing.incoming_dollar_value} to ${parsedValue}`);
+        console.log(`Updating incoming_dollar_value for org ${organizationId} from ${existing.incoming_dollar_value} to ${roundedValue}`);
         // Update only the incoming_dollar_value
         const updatedOrganization = await prisma.organization.update({
             where: { id: organizationId },
             data: {
-                incoming_dollar_value: parsedValue
+                incoming_dollar_value: roundedValue
             },
             select: {
                 id: true,
                 name: true,
                 address: true,
-                incoming_dollar_value: true
+                incoming_dollar_value: true,
+                mealsvalue: true
             }
         });
         console.log('Successfully updated incoming_dollar_value:', updatedOrganization);
@@ -4915,6 +5680,58 @@ app.put('/api/organizations/:id/incoming-value', authenticateToken, async (req, 
     catch (err) {
         console.error('Error updating incoming dollar value:', err);
         res.status(500).json({ error: 'Failed to update incoming dollar value' });
+    }
+});
+// Update organization meals value only
+app.put('/api/organizations/:id/meals-value', authenticateToken, async (req, res) => {
+    try {
+        const organizationId = parseInt(req.params.id);
+        if (!organizationId) {
+            return res.status(400).json({ error: 'Invalid organization ID' });
+        }
+        const { mealsvalue } = req.body;
+        // Validate mealsvalue
+        if (mealsvalue === undefined || mealsvalue === null) {
+            return res.status(400).json({ error: 'Meals value is required' });
+        }
+        const parsedValue = parseFloat(mealsvalue);
+        if (isNaN(parsedValue) || parsedValue < 0) {
+            return res.status(400).json({ error: 'Invalid meals value. Must be a positive number.' });
+        }
+        // Round to 2 decimal places for consistency
+        const roundedValue = Math.round(parsedValue * 100) / 100;
+        // Check if organization exists and user has access
+        const reqAny = req;
+        const userOrganizationId = reqAny.user.organizationId;
+        if (organizationId !== userOrganizationId) {
+            return res.status(403).json({ error: 'Access denied. You can only update your own organization.' });
+        }
+        const existing = await prisma.organization.findUnique({
+            where: { id: organizationId }
+        });
+        if (!existing) {
+            return res.status(404).json({ error: 'Organization not found' });
+        }
+        console.log(`Updating mealsvalue for org ${organizationId} from ${existing.mealsvalue} to ${roundedValue}`);
+        // Update only the mealsvalue
+        const updatedOrganization = await prisma.organization.update({
+            where: { id: organizationId },
+            data: {
+                mealsvalue: roundedValue
+            },
+            select: {
+                id: true,
+                name: true,
+                address: true,
+                mealsvalue: true
+            }
+        });
+        console.log('Successfully updated mealsvalue:', updatedOrganization);
+        res.json(updatedOrganization);
+    }
+    catch (err) {
+        console.error('Error updating meals value:', err);
+        res.status(500).json({ error: 'Failed to update meals value' });
     }
 });
 // Delete organization
@@ -4935,7 +5752,7 @@ app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
         await prisma.$transaction([
             prisma.donation.deleteMany({ where: { organizationId } }),
             prisma.donationCategory.deleteMany({ where: { organizationId } }),
-            prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+            prisma.donationLocation.deleteMany({ where: { kitchenId: organizationId } }),
             prisma.recurringShift.deleteMany({ where: { organizationId } }),
             prisma.shift.deleteMany({ where: { organizationId } }),
             prisma.shiftCategory.deleteMany({ where: { organizationId } }),
@@ -5035,21 +5852,6 @@ app.delete('/api/shiftsignups/:id', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Failed to delete shift signup' });
     }
 });
-// Get all donors for the authenticated organization
-app.get('/api/donors', authenticateToken, async (req, res) => {
-    try {
-        const organizationId = req.user.organizationId;
-        const donors = await prisma.donor.findMany({
-            where: { kitchenId: organizationId },
-            select: { id: true, name: true }
-        });
-        res.json(donors);
-    }
-    catch (err) {
-        console.error('Error fetching donors:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
 // Export inventory table (donor x category) as Excel
 app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
     try {
@@ -5080,8 +5882,8 @@ app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
                 pound_lb_: true
             }
         });
-        // Fetch donors
-        const donors = await prisma.donor.findMany({
+        // Fetch donation locations
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             select: { id: true, name: true }
         });
@@ -5110,24 +5912,24 @@ app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
                     }
                 }
             },
-            select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+            select: { categoryId: true, weightKg: true, Donation: { select: { donationLocationId: true } } }
         });
-        // Build donor x category table
+        // Build donation location x category table
         const donorIdToName = {};
-        donors.forEach(d => { donorIdToName[d.id] = d.name; });
+        donationLocations.forEach(d => { donorIdToName[d.id] = d.name; });
         const catIdToName = {};
         categories.forEach(c => { catIdToName[c.id] = c.name; });
-        // Initialize table: donorName -> categoryName -> 0
+        // Initialize table: donationLocationName -> categoryName -> 0
         const table = {};
-        donors.forEach(donor => {
-            table[donor.name] = {};
+        donationLocations.forEach(donationLocation => {
+            table[donationLocation.name] = {};
             categories.forEach(cat => {
-                table[donor.name][cat.name] = 0;
+                table[donationLocation.name][cat.name] = 0;
             });
         });
         // Fill table with actual weights
         items.forEach(item => {
-            const donorName = donorIdToName[Number(item.Donation.donorId)];
+            const donorName = donorIdToName[Number(item.Donation.donationLocationId)];
             const catName = catIdToName[String(item.categoryId)];
             if (donorName && catName) {
                 table[donorName][catName] += item.weightKg;
@@ -5164,14 +5966,14 @@ app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
         const workbook = new exceljs_1.default.Workbook();
         const worksheet = workbook.addWorksheet('Inventory');
         // Header row with unit labels
-        const headerRow = ['Donor', ...categories.map(c => `${c.name} (${getUnitLabel()})`), `Total (${getUnitLabel()})`];
+        const headerRow = ['Donation Location', ...categories.map(c => `${c.name} (${getUnitLabel()})`), `Total (${getUnitLabel()})`];
         worksheet.addRow(headerRow);
         // Data rows
-        donors.forEach(donor => {
-            const row = [donor.name];
+        donationLocations.forEach(donationLocation => {
+            const row = [donationLocation.name];
             let donorTotal = 0;
             categories.forEach(cat => {
-                const val = convertWeight(table[donor.name][cat.name] || 0);
+                const val = convertWeight(table[donationLocation.name][cat.name] || 0);
                 row.push(val);
                 donorTotal += val;
             });
@@ -5182,7 +5984,7 @@ app.get('/api/inventory/export-table', authenticateToken, async (req, res) => {
         const totalRow = ['Total'];
         let grandTotal = 0;
         categories.forEach(cat => {
-            const catTotal = donors.reduce((sum, donor) => sum + convertWeight(table[donor.name][cat.name] || 0), 0);
+            const catTotal = donationLocations.reduce((sum, donationLocation) => sum + convertWeight(table[donationLocation.name][cat.name] || 0), 0);
             totalRow.push(+catTotal.toFixed(2));
             grandTotal += catTotal;
         });
@@ -5207,11 +6009,11 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req, r
         // Get incoming dollar value for this organization
         const org = await prisma.organization.findUnique({
             where: { id: organizationId },
-            select: { incoming_dollar_value: true }
+            select: { incoming_dollar_value: true, mealsvalue: true }
         });
-        const incomingDollarValue = (org === null || org === void 0 ? void 0 : org.incoming_dollar_value) || 0;
-        // Get all donors for this organization
-        const donors = await prisma.donor.findMany({
+        const incomingDollarValue = Number(org === null || org === void 0 ? void 0 : org.incoming_dollar_value) || 0;
+        // Get all donation locations for this organization
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             select: { id: true, name: true }
         });
@@ -5233,7 +6035,7 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req, r
                     lte: endDate
                 }
             },
-            include: { Donor: true }
+            include: { DonationLocation: true }
         });
         // Get weighing categories for custom units
         let weighingCategories = [];
@@ -5257,11 +6059,11 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req, r
             }
             return +weightKg.toFixed(2);
         }
-        // Build donor totals
+        // Build donation location totals
         const donorTotals = {};
-        donors.forEach(donor => { donorTotals[donor.name] = { weight: 0, value: 0 }; });
+        donationLocations.forEach(donationLocation => { donorTotals[donationLocation.name] = { weight: 0, value: 0 }; });
         donations.forEach(donation => {
-            const donorName = donation.Donor.name;
+            const donorName = donation.DonationLocation.name;
             const weightKg = donation.summary;
             if (donorTotals[donorName]) {
                 donorTotals[donorName].weight += weightKg;
@@ -5272,13 +6074,13 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req, r
         const workbook = new (require('exceljs')).Workbook();
         const worksheet = workbook.addWorksheet('Incoming Summary');
         const unitLabel = unit === 'Pounds (lb)' ? 'lbs' : (unit === 'Kilograms (kg)' ? 'kg' : unit);
-        worksheet.addRow(['Donor', `Weight (${unitLabel})`, 'Value ($)']);
+        worksheet.addRow(['Donation Location', `Weight (${unitLabel})`, 'Value ($)']);
         let grandTotalWeight = 0;
         let grandTotalValue = 0;
-        donors.forEach(donor => {
-            const w = convertWeight(donorTotals[donor.name].weight);
-            const v = +(donorTotals[donor.name].value).toFixed(2);
-            worksheet.addRow([donor.name, w, v]);
+        donationLocations.forEach(donationLocation => {
+            const w = convertWeight(donorTotals[donationLocation.name].weight);
+            const v = +(donorTotals[donationLocation.name].value).toFixed(2);
+            worksheet.addRow([donationLocation.name, w, v]);
             grandTotalWeight += w;
             grandTotalValue += v;
         });
@@ -5659,7 +6461,7 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
         if (!shift) {
             return res.status(404).json({ error: 'Shift not found' });
         }
-        // Find the corresponding recurring shift to get registration fields
+        // Find the corresponding recurring shift to get registration fields and default users
         const recurringShift = await prisma.recurringShift.findFirst({
             where: {
                 name: shift.name,
@@ -5667,12 +6469,27 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
                 organizationId: shift.organizationId
             },
             include: {
-                registrationFields: true
+                registrationFields: true,
+                DefaultShiftUser: {
+                    where: { isActive: true },
+                    include: { User: true }
+                }
             }
         });
-        // Calculate available slots
+        // Get absences for this shift
+        const absences = await prisma.shiftAbsence.findMany({
+            where: {
+                shiftId: shift.id,
+                isApproved: true
+            }
+        });
+        // Calculate available slots including default users but excluding absent ones
         const signedUpCount = shift.ShiftSignup.length;
-        const availableSlots = shift.slots - signedUpCount;
+        const absentUserIds = new Set(absences.map(a => a.userId));
+        const presentDefaultUsersCount = (recurringShift === null || recurringShift === void 0 ? void 0 : recurringShift.DefaultShiftUser) ?
+            recurringShift.DefaultShiftUser.filter(du => !absentUserIds.has(du.userId)).length : 0;
+        const totalFilledSlots = signedUpCount + presentDefaultUsersCount;
+        const availableSlots = Math.max(0, shift.slots - totalFilledSlots);
         res.json({
             id: shift.id,
             name: shift.name,
@@ -5685,6 +6502,8 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
             organizationId: shift.organizationId,
             organizationName: shift.Organization.name,
             signedUpCount: signedUpCount,
+            defaultUsersCount: presentDefaultUsersCount,
+            totalFilledSlots: totalFilledSlots,
             registrationFields: (recurringShift === null || recurringShift === void 0 ? void 0 : recurringShift.registrationFields) || null
         });
     }
@@ -6104,6 +6923,142 @@ app.delete('/api/donation-categories/:id', authenticateToken, async (req, res) =
     }
     catch (err) {
         console.error('Error deleting donation category:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// Donor CRUD endpoints
+app.get('/api/donors', authenticateToken, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+        const donationLocations = await prisma.donationLocation.findMany({
+            where: { kitchenId: user.organizationId },
+            orderBy: { name: 'asc' }
+        });
+        res.json(donationLocations);
+    }
+    catch (err) {
+        console.error('Error fetching donors:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+app.post('/api/donors', authenticateToken, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+        const { name, location, contactInfo } = req.body;
+        if (!name || name.trim() === '') {
+            return res.status(400).json({ error: 'Donor name is required' });
+        }
+        // Check if donation location already exists
+        const existingDonationLocation = await prisma.donationLocation.findFirst({
+            where: {
+                name: name.trim(),
+                kitchenId: user.organizationId
+            }
+        });
+        if (existingDonationLocation) {
+            return res.status(400).json({ error: 'Donation location with this name already exists' });
+        }
+        const donationLocation = await prisma.donationLocation.create({
+            data: {
+                name: name.trim(),
+                location: location || null,
+                contactInfo: contactInfo || null,
+                kitchenId: user.organizationId
+            }
+        });
+        res.status(201).json(donationLocation);
+    }
+    catch (err) {
+        console.error('Error creating donor:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+app.put('/api/donors/:id', authenticateToken, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+        const donorId = parseInt(req.params.id);
+        const { name, location, contactInfo } = req.body;
+        if (!name || name.trim() === '') {
+            return res.status(400).json({ error: 'Donor name is required' });
+        }
+        // Check if donation location exists and belongs to user's organization
+        const existingDonationLocation = await prisma.donationLocation.findFirst({
+            where: {
+                id: donorId,
+                kitchenId: user.organizationId
+            }
+        });
+        if (!existingDonationLocation) {
+            return res.status(404).json({ error: 'Donation location not found' });
+        }
+        // Check if new name conflicts with existing donation location
+        const nameConflict = await prisma.donationLocation.findFirst({
+            where: {
+                name: name.trim(),
+                kitchenId: user.organizationId,
+                id: { not: donorId }
+            }
+        });
+        if (nameConflict) {
+            return res.status(400).json({ error: 'Donation location with this name already exists' });
+        }
+        const updatedDonationLocation = await prisma.donationLocation.update({
+            where: { id: donorId },
+            data: {
+                name: name.trim(),
+                location: location || null,
+                contactInfo: contactInfo || null
+            }
+        });
+        res.json(updatedDonationLocation);
+    }
+    catch (err) {
+        console.error('Error updating donor:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+app.delete('/api/donors/:id', authenticateToken, async (req, res) => {
+    try {
+        const user = req.user;
+        if (!user) {
+            return res.status(401).json({ error: 'User not authenticated' });
+        }
+        const donorId = parseInt(req.params.id);
+        // Check if donation location exists and belongs to user's organization
+        const existingDonationLocation = await prisma.donationLocation.findFirst({
+            where: {
+                id: donorId,
+                kitchenId: user.organizationId
+            }
+        });
+        if (!existingDonationLocation) {
+            return res.status(404).json({ error: 'Donation location not found' });
+        }
+        // Check if donation location is being used in donations
+        const donations = await prisma.donation.findFirst({
+            where: { donationLocationId: donorId }
+        });
+        if (donations) {
+            return res.status(400).json({
+                error: 'Cannot delete donation location. It has existing donations.'
+            });
+        }
+        await prisma.donationLocation.delete({
+            where: { id: donorId }
+        });
+        res.json({ message: 'Donor deleted successfully' });
+    }
+    catch (err) {
+        console.error('Error deleting donor:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -6680,8 +7635,8 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
         if (!date) {
             return res.status(400).json({ error: 'Date parameter is required' });
         }
-        // Get all donors for this organization
-        const donors = await prisma.donor.findMany({
+        // Get all donation locations for this organization
+        const donationLocations = await prisma.donationLocation.findMany({
             where: { kitchenId: organizationId },
             orderBy: { name: 'asc' }
         });
@@ -6709,7 +7664,7 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
                 }
             },
             include: {
-                Donor: true,
+                DonationLocation: true,
                 DonationItem: {
                     include: {
                         DonationCategory: true
@@ -6717,15 +7672,15 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
                 }
             }
         });
-        // Build the table data: rows are donors, columns are categories
-        const tableData = donors.map(donor => {
-            const row = { donorId: donor.id, donorName: donor.name };
+        // Build the table data: rows are donation locations, columns are categories
+        const tableData = donationLocations.map(donationLocation => {
+            const row = { donorId: donationLocation.id, donorName: donationLocation.name };
             // Initialize all categories with 0
             categories.forEach(category => {
                 row[category.name] = 0;
             });
-            // Find donations for this donor on this date
-            const donorDonations = donations.filter(d => d.donorId === donor.id);
+            // Find donations for this donation location on this date
+            const donorDonations = donations.filter(d => d.donationLocationId === donationLocation.id);
             // Sum up weights for each category
             donorDonations.forEach(donation => {
                 donation.DonationItem.forEach(item => {
@@ -6738,7 +7693,7 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
             return row;
         });
         res.json({
-            donors: donors.map(d => ({ id: d.id, name: d.name })),
+            donors: donationLocations.map(d => ({ id: d.id, name: d.name })),
             categories: categories.map(c => ({ id: c.id, name: c.name })),
             tableData
         });
@@ -6759,12 +7714,12 @@ app.post('/detail-donations', authenticateToken, async (req, res) => {
         if (!date || !donorId || !categoryId || weightKg === undefined) {
             return res.status(400).json({ error: 'Date, donorId, categoryId, and weightKg are required' });
         }
-        // Validate donor belongs to organization
-        const donor = await prisma.donor.findFirst({
+        // Validate donation location belongs to organization
+        const donationLocation = await prisma.donationLocation.findFirst({
             where: { id: donorId, kitchenId: organizationId }
         });
-        if (!donor) {
-            return res.status(404).json({ error: 'Donor not found' });
+        if (!donationLocation) {
+            return res.status(404).json({ error: 'Donation location not found' });
         }
         // Validate category belongs to organization
         const category = await prisma.donationCategory.findFirst({
@@ -6824,7 +7779,7 @@ app.post('/detail-donations', authenticateToken, async (req, res) => {
             donation = await prisma.donation.create({
                 data: {
                     organizationId,
-                    donorId,
+                    donationLocationId: donorId,
                     summary: weightKg,
                     createdAt: utcStartDate
                 }
@@ -6857,12 +7812,12 @@ app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req,
         if (!date || weightKg === undefined) {
             return res.status(400).json({ error: 'Date and weightKg are required' });
         }
-        // Validate donor belongs to organization
-        const donor = await prisma.donor.findFirst({
+        // Validate donation location belongs to organization
+        const donationLocation = await prisma.donationLocation.findFirst({
             where: { id: parseInt(donorId), kitchenId: organizationId }
         });
-        if (!donor) {
-            return res.status(404).json({ error: 'Donor not found' });
+        if (!donationLocation) {
+            return res.status(404).json({ error: 'Donation location not found' });
         }
         // Validate category belongs to organization
         const category = await prisma.donationCategory.findFirst({
@@ -6893,7 +7848,7 @@ app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req,
             donation = await prisma.donation.create({
                 data: {
                     organizationId,
-                    donorId: parseInt(donorId),
+                    donationLocationId: parseInt(donorId),
                     summary: weightKg,
                     createdAt: utcStartDate
                 }
@@ -6944,12 +7899,12 @@ app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (r
         if (!date) {
             return res.status(400).json({ error: 'Date parameter is required' });
         }
-        // Validate donor belongs to organization
-        const donor = await prisma.donor.findFirst({
+        // Validate donation location belongs to organization
+        const donationLocation = await prisma.donationLocation.findFirst({
             where: { id: parseInt(donorId), kitchenId: organizationId }
         });
-        if (!donor) {
-            return res.status(404).json({ error: 'Donor not found' });
+        if (!donationLocation) {
+            return res.status(404).json({ error: 'Donation location not found' });
         }
         // Validate category belongs to organization
         const category = await prisma.donationCategory.findFirst({
@@ -7012,7 +7967,7 @@ app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (r
 // Contact form endpoint
 app.post('/api/contact', async (req, res) => {
     try {
-        const { name, email, description } = req.body;
+        const { name, email, description, type } = req.body;
         // Validate required fields
         if (!name || !email || !description) {
             return res.status(400).json({ error: 'Name, email, and description are required' });
@@ -7025,24 +7980,29 @@ app.post('/api/contact', async (req, res) => {
                 pass: process.env.EMAIL_PASS || 'your-app-password'
             }
         });
+        // Determine if this is an issue report or regular contact form
+        const isIssueReport = type === 'issue_report' || description.includes('Issue Report Details:');
+        const recipientEmail = isIssueReport ? 'support@hungy.ca' : 'contact@hungy.ca';
+        const subjectPrefix = isIssueReport ? 'Issue Report' : 'Contact Form Submission';
+        const sourceText = isIssueReport ? 'Hungy Dashboard Report Issue feature' : 'Hungy website contact form';
         // Email content
         const mailOptions = {
             from: process.env.EMAIL_USER || 'your-email@gmail.com',
-            to: 'contact@hungy.ca',
-            subject: `New Contact Form Submission from ${name}`,
+            to: recipientEmail,
+            subject: `${subjectPrefix} from ${name}`,
             html: `
-        <h2>New Contact Form Submission</h2>
+        <h2>New ${subjectPrefix}</h2>
         <p><strong>Name:</strong> ${name}</p>
         <p><strong>Email:</strong> ${email}</p>
         <p><strong>Message:</strong></p>
         <p>${description.replace(/\n/g, '<br>')}</p>
         <hr>
-        <p><em>This message was sent from the Hungy website contact form.</em></p>
+        <p><em>This message was sent from the ${sourceText}.</em></p>
       `
         };
         // Send email
         await transporter.sendMail(mailOptions);
-        res.json({ message: 'Contact form submitted successfully' });
+        res.json({ message: `${subjectPrefix.toLowerCase()} submitted successfully` });
     }
     catch (error) {
         console.error('Error sending contact form email:', error);
@@ -7050,6 +8010,200 @@ app.post('/api/contact', async (req, res) => {
     }
 });
 // Start server
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Server running on port ${port}`);
+});
+// Graceful shutdown handling
+process.on('SIGINT', async () => {
+    console.log('Received SIGINT, shutting down gracefully...');
+    await prisma.$disconnect();
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+});
+// Donor Data API endpoints
+app.get('/api/donor-data', authenticateToken, async (req, res) => {
+    try {
+        const { month, year, unit } = req.query;
+        const organizationId = req.user.organizationId;
+        if (!year) {
+            return res.status(400).json({ error: 'Year is required' });
+        }
+        // Get date range based on month/year
+        let startDate, endDate;
+        if (!month || parseInt(month) === 0) {
+            // All months for the year
+            startDate = new Date(parseInt(year), 0, 1);
+            endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+        }
+        else {
+            // Specific month
+            startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+            endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+        }
+        // Fetch ALL donors for this organization
+        const donorData = await prisma.donor.findMany({
+            where: {
+                kitchenId: organizationId
+            },
+            include: {
+                Donation: {
+                    where: {
+                        createdAt: {
+                            gte: startDate,
+                            lte: endDate
+                        }
+                    },
+                    include: {
+                        DonationItem: {
+                            include: {
+                                DonationCategory: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        // Process data for table display
+        const tableData = donorData.map(donor => {
+            // Calculate total donation summary from Donation.summary field for the selected period
+            const totalWeightKg = donor.Donation.reduce((sum, donation) => {
+                return sum + donation.summary;
+            }, 0);
+            // Convert weight based on unit preference
+            let displayWeight = totalWeightKg;
+            let unitLabel = 'kg';
+            if (unit === 'lb' || unit === 'Pounds (lb)') {
+                displayWeight = totalWeightKg * 2.20462; // Convert kg to lbs
+                unitLabel = 'lbs';
+            }
+            // Get all donation dates for this donor
+            const donationDates = donor.Donation.map(d => d.createdAt.toISOString().split('T')[0]);
+            const uniqueDates = [...new Set(donationDates)].sort();
+            return {
+                donorId: donor.id,
+                firstName: donor.firstName || '',
+                lastName: donor.lastName || '',
+                email: donor.email || '',
+                phoneNumber: donor.phoneNumber || '',
+                donorType: donor.donorType || '',
+                organizationName: donor.organizationName || '',
+                donationSummary: Math.round(displayWeight * 100) / 100,
+                unit: unitLabel,
+                donationDates: uniqueDates,
+                donationCount: donor.Donation.length
+            };
+        });
+        // Sort by donation summary (descending)
+        tableData.sort((a, b) => b.donationSummary - a.donationSummary);
+        res.json({
+            data: tableData,
+            unit: tableData.length > 0 ? tableData[0].unit : 'kg'
+        });
+    }
+    catch (err) {
+        console.error('Error fetching donor data:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// Export donor data as Excel
+app.get('/api/donor-data/export', authenticateToken, async (req, res) => {
+    try {
+        const { month, year, unit } = req.query;
+        const organizationId = req.user.organizationId;
+        if (!year) {
+            return res.status(400).json({ error: 'Year is required' });
+        }
+        // Get date range based on month/year
+        let startDate, endDate;
+        if (!month || parseInt(month) === 0) {
+            startDate = new Date(parseInt(year), 0, 1);
+            endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+        }
+        else {
+            startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+            endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+        }
+        // Fetch ALL donors for this organization
+        const donorData = await prisma.donor.findMany({
+            where: {
+                kitchenId: organizationId
+            },
+            include: {
+                Donation: {
+                    where: {
+                        createdAt: {
+                            gte: startDate,
+                            lte: endDate
+                        }
+                    },
+                    include: {
+                        DonationItem: {
+                            include: {
+                                DonationCategory: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        // Determine unit conversion
+        let conversionFactor = 1;
+        let unitLabel = 'kg';
+        if (unit === 'lb' || unit === 'Pounds (lb)') {
+            conversionFactor = 2.20462;
+            unitLabel = 'lbs';
+        }
+        // Create Excel workbook
+        const workbook = new exceljs_1.default.Workbook();
+        const worksheet = workbook.addWorksheet('Donor Data');
+        // Add headers
+        const headers = [
+            'Date',
+            'Name (First + Last)',
+            'Email',
+            'Phone',
+            'Donor Type',
+            'Organization Name',
+            `Donation Summary (${unitLabel})`
+        ];
+        worksheet.addRow(headers);
+        // Process data for Excel export - match what's shown on screen
+        donorData.forEach(donor => {
+            // Calculate total donation summary for the selected period (same as screen)
+            const totalWeightKg = donor.Donation.reduce((sum, donation) => {
+                return sum + donation.summary;
+            }, 0);
+            const displayWeight = totalWeightKg * conversionFactor;
+            const row = [
+                `${year}-${month ? month.toString().padStart(2, '0') : 'All'}`,
+                `${donor.firstName || ''} ${donor.lastName || ''}`.trim(),
+                donor.email || '',
+                donor.phoneNumber || '',
+                donor.donorType || '',
+                donor.organizationName || '',
+                Math.round(displayWeight * 100) / 100
+            ];
+            worksheet.addRow(row);
+        });
+        // Set response headers
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="donor-data-${year}-${month || 'all'}.xlsx"`);
+        // Write workbook to response
+        await workbook.xlsx.write(res);
+        res.end();
+    }
+    catch (err) {
+        console.error('Error exporting donor data:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+process.on('SIGTERM', async () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
+    await prisma.$disconnect();
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
 });

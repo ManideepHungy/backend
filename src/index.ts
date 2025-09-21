@@ -8784,6 +8784,205 @@ process.on('SIGINT', async () => {
   })
 })
 
+// Donor Data API endpoints
+app.get('/api/donor-data', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+
+    if (!year) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+
+    // Get date range based on month/year
+    let startDate: Date, endDate: Date;
+    if (!month || parseInt(month) === 0) {
+      // All months for the year
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      // Specific month
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
+
+    // Fetch ALL donors for this organization
+    const donorData = await prisma.donor.findMany({
+      where: {
+        kitchenId: organizationId
+      },
+      include: {
+        Donation: {
+          where: {
+            createdAt: {
+              gte: startDate,
+              lte: endDate
+            }
+          },
+          include: {
+            DonationItem: {
+              include: {
+                DonationCategory: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // Process data for table display
+    const tableData = donorData.map(donor => {
+      // Calculate total donation summary from Donation.summary field for the selected period
+      const totalWeightKg = donor.Donation.reduce((sum, donation) => {
+        return sum + donation.summary;
+      }, 0);
+
+      // Convert weight based on unit preference
+      let displayWeight = totalWeightKg;
+      let unitLabel = 'kg';
+      
+      if (unit === 'lb' || unit === 'Pounds (lb)') {
+        displayWeight = totalWeightKg * 2.20462; // Convert kg to lbs
+        unitLabel = 'lbs';
+      }
+
+      // Get all donation dates for this donor
+      const donationDates = donor.Donation.map(d => d.createdAt.toISOString().split('T')[0]);
+      const uniqueDates = [...new Set(donationDates)].sort();
+
+      return {
+        donorId: donor.id,
+        firstName: donor.firstName || '',
+        lastName: donor.lastName || '',
+        email: donor.email || '',
+        phoneNumber: donor.phoneNumber || '',
+        donorType: donor.donorType || '',
+        organizationName: donor.organizationName || '',
+        donationSummary: Math.round(displayWeight * 100) / 100,
+        unit: unitLabel,
+        donationDates: uniqueDates,
+        donationCount: donor.Donation.length
+      };
+    });
+
+    // Sort by donation summary (descending)
+    tableData.sort((a, b) => b.donationSummary - a.donationSummary);
+
+    res.json({
+      data: tableData,
+      unit: tableData.length > 0 ? tableData[0].unit : 'kg'
+    });
+
+  } catch (err) {
+    console.error('Error fetching donor data:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export donor data as Excel
+app.get('/api/donor-data/export', authenticateToken, async (req: any, res) => {
+  try {
+    const { month, year, unit } = req.query;
+    const organizationId = req.user.organizationId;
+
+    if (!year) {
+      return res.status(400).json({ error: 'Year is required' });
+    }
+
+    // Get date range based on month/year
+    let startDate: Date, endDate: Date;
+    if (!month || parseInt(month) === 0) {
+      startDate = new Date(parseInt(year), 0, 1);
+      endDate = new Date(parseInt(year), 11, 31, 23, 59, 59, 999);
+    } else {
+      startDate = new Date(parseInt(year), parseInt(month) - 1, 1);
+      endDate = new Date(parseInt(year), parseInt(month), 0, 23, 59, 59, 999);
+    }
+
+    // Fetch ALL donors for this organization
+    const donorData = await prisma.donor.findMany({
+      where: {
+        kitchenId: organizationId
+      },
+      include: {
+        Donation: {
+          where: {
+            createdAt: {
+              gte: startDate,
+              lte: endDate
+            }
+          },
+          include: {
+            DonationItem: {
+              include: {
+                DonationCategory: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // Determine unit conversion
+    let conversionFactor = 1;
+    let unitLabel = 'kg';
+    
+    if (unit === 'lb' || unit === 'Pounds (lb)') {
+      conversionFactor = 2.20462;
+      unitLabel = 'lbs';
+    }
+
+    // Create Excel workbook
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Donor Data');
+
+    // Add headers
+    const headers = [
+      'Date',
+      'Name (First + Last)',
+      'Email',
+      'Phone',
+      'Donor Type',
+      'Organization Name',
+      `Donation Summary (${unitLabel})`
+    ];
+    worksheet.addRow(headers);
+
+    // Process data for Excel export - match what's shown on screen
+    donorData.forEach(donor => {
+      // Calculate total donation summary for the selected period (same as screen)
+      const totalWeightKg = donor.Donation.reduce((sum, donation) => {
+        return sum + donation.summary;
+      }, 0);
+      
+      const displayWeight = totalWeightKg * conversionFactor;
+      
+      const row = [
+        `${year}-${month ? month.toString().padStart(2, '0') : 'All'}`,
+        `${donor.firstName || ''} ${donor.lastName || ''}`.trim(),
+        donor.email || '',
+        donor.phoneNumber || '',
+        donor.donorType || '',
+        donor.organizationName || '',
+        Math.round(displayWeight * 100) / 100
+      ];
+      worksheet.addRow(row);
+    });
+
+    // Set response headers
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="donor-data-${year}-${month || 'all'}.xlsx"`);
+
+    // Write workbook to response
+    await workbook.xlsx.write(res);
+    res.end();
+
+  } catch (err) {
+    console.error('Error exporting donor data:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 process.on('SIGTERM', async () => {
   console.log('Received SIGTERM, shutting down gracefully...')
   await prisma.$disconnect()

@@ -140,41 +140,76 @@ async function main() {
   console.log('Creating donors...');
   const donor1 = await prisma.donor.create({
     data: {
-      name: 'Fresh Market Grocery',
-      location: '789 Market Street, Downtown, CA 90210',
-      contactInfo: 'contact@freshmarket.com',
+      donorType: 'Business',
+      email: 'contact@freshmarket.com',
+      organizationName: 'Fresh Market Grocery',
+      phoneNumber: '555-1001',
       kitchenId: organization1.id
     }
   });
 
   const donor2 = await prisma.donor.create({
     data: {
-      name: 'Local Farm Co-op',
-      location: '321 Farm Road, Rural Area, CA 90212',
-      contactInfo: 'info@localfarmcoop.com',
+      donorType: 'Farm',
+      email: 'info@localfarmcoop.com',
+      organizationName: 'Local Farm Co-op',
+      phoneNumber: '555-1002',
       kitchenId: organization1.id
     }
   });
 
   const donor3 = await prisma.donor.create({
     data: {
-      name: 'City Bakery',
-      location: '654 Bread Street, Downtown, CA 90210',
-      contactInfo: 'orders@citybakery.com',
+      donorType: 'Business',
+      email: 'orders@citybakery.com',
+      organizationName: 'City Bakery',
+      phoneNumber: '555-1003',
       kitchenId: organization1.id
     }
   });
 
   const donor4 = await prisma.donor.create({
     data: {
-      name: 'Community Garden',
-      location: '987 Garden Lane, Westside, CA 90211',
-      contactInfo: 'volunteers@communitygarden.org',
+      donorType: 'Community',
+      email: 'volunteers@communitygarden.org',
+      organizationName: 'Community Garden',
+      phoneNumber: '555-1004',
       kitchenId: organization2.id
     }
   });
 
   console.log('✅ Donors created');
+
+  // Create Donation Locations
+  console.log('Creating donation locations...');
+  const donationLocation1 = await prisma.donationLocation.create({
+    data: {
+      name: 'Main Kitchen',
+      location: '123 Main Street, Downtown, CA 90210',
+      contactInfo: 'kitchen@communityfoodbank.org',
+      kitchenId: organization1.id
+    }
+  });
+
+  const donationLocation2 = await prisma.donationLocation.create({
+    data: {
+      name: 'Distribution Center',
+      location: '456 Oak Avenue, Westside, CA 90211',
+      contactInfo: 'distribution@communityfoodbank.org',
+      kitchenId: organization1.id
+    }
+  });
+
+  const donationLocation3 = await prisma.donationLocation.create({
+    data: {
+      name: 'Hope Kitchen Location',
+      location: '789 Hope Street, Westside, CA 90211',
+      contactInfo: 'info@hopekitchen.org',
+      kitchenId: organization2.id
+    }
+  });
+
+  console.log('✅ Donation locations created');
 
   // Create Donation Categories
   console.log('Creating donation categories...');
@@ -515,6 +550,7 @@ async function main() {
       donorId: donor1.id,
       shiftSignupId: signup1.id,
       summary: 125.50,
+      donationLocationId: donationLocation1.id,
       createdAt: new Date('2024-06-15T10:30:00Z')
     }
   });
@@ -526,6 +562,7 @@ async function main() {
       donorId: donor2.id,
       shiftSignupId: signup2.id,
       summary: 89.75,
+      donationLocationId: donationLocation1.id,
       createdAt: new Date('2024-06-15T11:15:00Z')
     }
   });
@@ -537,6 +574,7 @@ async function main() {
       donorId: donor3.id,
       shiftSignupId: signup3.id,
       summary: 156.25,
+      donationLocationId: donationLocation2.id,
       createdAt: new Date('2024-06-16T14:45:00Z')
     }
   });
@@ -548,6 +586,7 @@ async function main() {
       donorId: donor1.id,
       shiftSignupId: signup4.id,
       summary: 67.80,
+      donationLocationId: donationLocation1.id,
       createdAt: new Date('2024-06-17T17:30:00Z')
     }
   });
@@ -685,49 +724,56 @@ async function main() {
   const donationManagementModule = await prisma.module.create({
     data: {
       name: 'Donation Management',
-      description: 'Manage donations, categories, and inventory'
+      description: 'Manage donations, categories, and inventory',
+      organizationId: organization1.id
     }
   });
 
   const volunteerMealCountingModule = await prisma.module.create({
     data: {
       name: 'Volunteer Meal Counting',
-      description: 'Count meals served by volunteers during shifts'
+      description: 'Count meals served by volunteers during shifts',
+      organizationId: organization1.id
     }
   });
 
   const volunteerShiftManagementModule = await prisma.module.create({
     data: {
       name: 'Volunteer Shift Management',
-      description: 'Manage volunteer shifts and signups'
+      description: 'Manage volunteer shifts and signups',
+      organizationId: organization1.id
     }
   });
 
   const adminMealCountingModule = await prisma.module.create({
     data: {
       name: 'Admin Meal Counting',
-      description: 'Administrative meal counting and reporting'
+      description: 'Administrative meal counting and reporting',
+      organizationId: organization1.id
     }
   });
 
   const groupShiftsManagementModule = await prisma.module.create({
     data: {
       name: 'Group Shifts Management',
-      description: 'Manage group shifts and recurring schedules'
+      description: 'Manage group shifts and recurring schedules',
+      organizationId: organization1.id
     }
   });
 
   const dashboardModule = await prisma.module.create({
     data: {
       name: 'Dashboard',
-      description: 'Main dashboard access'
+      description: 'Main dashboard access',
+      organizationId: organization1.id
     }
   });
 
   const profileModule = await prisma.module.create({
     data: {
       name: 'Profile',
-      description: 'User profile management'
+      description: 'User profile management',
+      organizationId: organization1.id
     }
   });
 

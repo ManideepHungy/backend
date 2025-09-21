@@ -3805,7 +3805,21 @@ app.get('/api/recurring-shifts', authenticateToken, async (req: any, res) => {
     const shifts = await prisma.recurringShift.findMany({
       where: { organizationId },
       include: {
-        ShiftCategory: true
+        ShiftCategory: true,
+        DefaultShiftUser: {
+          where: { isActive: true },
+          include: {
+            User: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true
+              }
+            }
+          }
+        }
       },
       orderBy: [
         { dayOfWeek: 'asc' },
@@ -4307,6 +4321,743 @@ app.post('/api/shiftsignups', authenticateToken, async (req: any, res) => {
   }
 });
 
+// --- Default Shift Users Management Endpoints ---
+
+// Get default users for a recurring shift
+app.get('/api/recurring-shifts/:id/default-users', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const recurringShiftId = parseInt(req.params.id);
+
+    // Check if recurring shift exists and belongs to organization
+    const recurringShift = await prisma.recurringShift.findFirst({
+      where: { id: recurringShiftId, organizationId }
+    });
+
+    if (!recurringShift) {
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    // Get default users for this recurring shift
+    const defaultUsers = await prisma.defaultShiftUser.findMany({
+      where: { 
+        recurringShiftId,
+        organizationId,
+        isActive: true
+      },
+      include: {
+        User: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    res.json({
+      defaultUsers: defaultUsers.map((du: any) => ({
+        id: du.id,
+        userId: du.userId,
+        user: du.User,
+        createdAt: du.createdAt
+      })),
+      totalCount: defaultUsers.length
+    });
+  } catch (err) {
+    console.error('Error fetching default users:', err);
+    res.status(500).json({ error: 'Failed to fetch default users' });
+  }
+});
+
+// Add default user to recurring shift
+app.post('/api/recurring-shifts/:id/default-users', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const recurringShiftId = parseInt(req.params.id);
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    // Check if recurring shift exists and belongs to organization
+    const recurringShift = await prisma.recurringShift.findFirst({
+      where: { id: recurringShiftId, organizationId }
+    });
+
+    if (!recurringShift) {
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if user is already a default user for this shift
+    const existingDefault = await prisma.defaultShiftUser.findFirst({
+      where: { 
+        recurringShiftId,
+        userId,
+        organizationId
+      }
+    });
+
+    if (existingDefault) {
+      return res.status(400).json({ error: 'User is already a default user for this shift' });
+    }
+
+    // Check if adding this user would exceed the shift slots
+    const currentDefaultCount = await prisma.defaultShiftUser.count({
+      where: { 
+        recurringShiftId,
+        organizationId,
+        isActive: true
+      }
+    });
+
+    if (currentDefaultCount >= recurringShift.slots) {
+      return res.status(400).json({ error: 'Cannot add more default users than available slots' });
+    }
+
+    // Create default user assignment
+    const defaultUser = await prisma.defaultShiftUser.create({
+      data: {
+        recurringShiftId,
+        userId,
+        organizationId
+      },
+      include: {
+        User: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true
+          }
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      defaultUser: {
+        id: defaultUser.id,
+        userId: defaultUser.userId,
+        user: defaultUser.User,
+        createdAt: defaultUser.createdAt
+      }
+    });
+  } catch (err) {
+    console.error('Error adding default user:', err);
+    res.status(500).json({ error: 'Failed to add default user' });
+  }
+});
+
+// Remove default user from recurring shift
+app.delete('/api/recurring-shifts/:id/default-users/:userId', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const recurringShiftId = parseInt(req.params.id);
+    const userId = parseInt(req.params.userId);
+
+    // Check if default user assignment exists
+    const existingDefault = await prisma.defaultShiftUser.findFirst({
+      where: { 
+        recurringShiftId,
+        userId,
+        organizationId
+      }
+    });
+
+    if (!existingDefault) {
+      return res.status(404).json({ error: 'Default user assignment not found' });
+    }
+
+    // Delete the default user assignment
+    await prisma.defaultShiftUser.delete({
+      where: { id: existingDefault.id }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error removing default user:', err);
+    res.status(500).json({ error: 'Failed to remove default user' });
+  }
+});
+
+// Bulk update default users for a recurring shift
+app.put('/api/recurring-shifts/:id/default-users', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const recurringShiftId = parseInt(req.params.id);
+    const { userIds } = req.body;
+
+    if (!Array.isArray(userIds)) {
+      return res.status(400).json({ error: 'userIds must be an array' });
+    }
+
+    // Check if recurring shift exists and belongs to organization
+    const recurringShift = await prisma.recurringShift.findFirst({
+      where: { id: recurringShiftId, organizationId }
+    });
+
+    if (!recurringShift) {
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    // Validate that all users belong to the organization
+    const users = await prisma.user.findMany({
+      where: { 
+        id: { in: userIds },
+        organizationId
+      }
+    });
+
+    if (users.length !== userIds.length) {
+      return res.status(400).json({ error: 'Some users do not belong to your organization' });
+    }
+
+    // Check if the number of users exceeds available slots
+    if (userIds.length > recurringShift.slots) {
+      return res.status(400).json({ error: 'Cannot assign more users than available slots' });
+    }
+
+    // Get current default users
+    const currentDefaults = await prisma.defaultShiftUser.findMany({
+      where: { 
+        recurringShiftId,
+        organizationId
+      }
+    });
+
+    const currentUserIds = currentDefaults.map((du: any) => du.userId);
+    const toAdd = userIds.filter((id: any) => !currentUserIds.includes(id));
+    const toRemove = currentUserIds.filter((id: any) => !userIds.includes(id));
+
+    // Remove users who are no longer default
+    if (toRemove.length > 0) {
+      await prisma.defaultShiftUser.deleteMany({
+        where: {
+          recurringShiftId,
+          userId: { in: toRemove },
+          organizationId
+        }
+      });
+    }
+
+    // Add new default users
+    if (toAdd.length > 0) {
+      await prisma.defaultShiftUser.createMany({
+        data: toAdd.map(userId => ({
+          recurringShiftId,
+          userId,
+          organizationId
+        }))
+      });
+    }
+
+    res.json({
+      success: true,
+      added: toAdd.length,
+      removed: toRemove.length,
+      total: userIds.length
+    });
+  } catch (err) {
+    console.error('Error updating default users:', err);
+    res.status(500).json({ error: 'Failed to update default users' });
+  }
+});
+
+// Create shift from recurring shift with default users auto-assigned
+app.post('/api/shifts/from-recurring/:recurringShiftId', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const recurringShiftId = parseInt(req.params.recurringShiftId);
+    const { date, customSlots } = req.body;
+
+    console.log('🔍 CREATING SHIFT FROM RECURRING:', {
+      '=== REQUEST PARAMS ===': {
+        recurringShiftId,
+        date,
+        customSlots,
+        organizationId,
+        receivedDate: new Date(date),
+        receivedDateString: new Date(date).toDateString(),
+        receivedDateLocal: new Date(date).toLocaleDateString(),
+        receivedDateISO: new Date(date).toISOString()
+      },
+      '=== USER AUTH ===': {
+        user: req.user,
+        userId: req.user?.id,
+        userOrganizationId: req.user?.organizationId,
+        userEmail: req.user?.email
+      }
+    });
+
+    if (!date) {
+      return res.status(400).json({ error: 'date is required' });
+    }
+
+    // Get recurring shift with default users
+    console.log('🔍 LOOKING FOR RECURRING SHIFT:', {
+      '=== QUERY PARAMS ===': {
+        recurringShiftId,
+        organizationId,
+        query: { id: recurringShiftId, organizationId }
+      },
+      '=== DATA TYPES ===': {
+        recurringShiftIdType: typeof recurringShiftId,
+        organizationIdType: typeof organizationId,
+        recurringShiftIdParsed: parseInt(req.params.recurringShiftId)
+      }
+    });
+    
+    const recurringShift = await prisma.recurringShift.findFirst({
+      where: { id: recurringShiftId, organizationId },
+      include: {
+        DefaultShiftUser: {
+          where: { isActive: true },
+          include: { User: true }
+        },
+        ShiftCategory: true
+      }
+    });
+    
+    console.log('Recurring shift query result:', recurringShift ? {
+      id: recurringShift.id,
+      name: recurringShift.name,
+      organizationId: recurringShift.organizationId,
+      defaultUsersCount: recurringShift.DefaultShiftUser?.length || 0
+    } : 'Not found');
+
+    if (!recurringShift) {
+      console.log('Recurring shift not found:', { recurringShiftId, organizationId });
+      return res.status(404).json({ error: 'Recurring shift not found' });
+    }
+
+    console.log('Found recurring shift:', {
+      id: recurringShift.id,
+      name: recurringShift.name,
+      defaultUsersCount: recurringShift.DefaultShiftUser?.length || 0
+    });
+
+    // Calculate start and end times for the specific date
+    // Parse date components directly to avoid timezone conversion issues
+    const [year, month, day] = date.split('-').map(Number);
+    const targetDate = new Date(year, month - 1, day); // month is 0-indexed in Date constructor
+    
+    console.log('Date calculation:', {
+      inputDate: date,
+      parsedComponents: { year, month, day },
+      targetDate: targetDate.toISOString(),
+      targetDateLocal: targetDate.toLocaleDateString(),
+      targetDateString: targetDate.toDateString(),
+      recurringStartTime: recurringShift.startTime.toISOString(),
+      recurringEndTime: recurringShift.endTime.toISOString()
+    });
+    
+    const startTime = new Date(targetDate);
+    startTime.setHours(new Date(recurringShift.startTime).getHours(), new Date(recurringShift.startTime).getMinutes(), 0, 0);
+    
+    const endTime = new Date(targetDate);
+    endTime.setHours(new Date(recurringShift.endTime).getHours(), new Date(recurringShift.endTime).getMinutes(), 0, 0);
+    
+    console.log('Calculated times:', {
+      startTime: startTime.toISOString(),
+      startTimeLocal: startTime.toLocaleDateString(),
+      startTimeString: startTime.toDateString(),
+      endTime: endTime.toISOString(),
+      endTimeLocal: endTime.toLocaleDateString(),
+      endTimeString: endTime.toDateString()
+    });
+
+    // Check if shift already exists for this date
+    console.log('Checking for existing shift:', {
+      recurringShiftId,
+      organizationId,
+      startTime: startTime.toISOString(),
+      searchRange: {
+        from: new Date(startTime.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        to: new Date(startTime.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      }
+    });
+
+    const existingShift = await prisma.shift.findFirst({
+      where: {
+        recurringShiftId,
+        organizationId,
+        startTime: {
+          gte: new Date(startTime.getTime() - 24 * 60 * 60 * 1000), // 24 hours before
+          lte: new Date(startTime.getTime() + 24 * 60 * 60 * 1000)  // 24 hours after
+        }
+      }
+    });
+
+    console.log('Existing shift check result:', existingShift ? {
+      id: existingShift.id,
+      name: existingShift.name,
+      startTime: existingShift.startTime.toISOString()
+    } : 'No existing shift found');
+
+    if (existingShift) {
+      console.log('Returning existing shift instead of creating new one');
+      
+      // Get default users and absences for the existing shift
+      const defaultUsers = recurringShift.DefaultShiftUser;
+      const assignedUsers = [];
+      const absentUsers = [];
+
+      for (const defaultUser of defaultUsers) {
+        // Check if user has absence for this specific shift
+        const absence = await prisma.shiftAbsence.findFirst({
+          where: {
+            userId: defaultUser.userId,
+            shiftId: existingShift.id,
+            isApproved: true
+          }
+        });
+
+        if (!absence) {
+          // User is available - check if they're already signed up
+          const existingSignup = await prisma.shiftSignup.findFirst({
+            where: {
+              userId: defaultUser.userId,
+              shiftId: existingShift.id
+            }
+          });
+
+          if (!existingSignup) {
+            // User is not signed up, so they're a default user not yet assigned
+            assignedUsers.push(defaultUser.User);
+          }
+        } else {
+          // User is absent - log it
+          absentUsers.push({
+            user: defaultUser.User,
+            absence: absence
+          });
+        }
+      }
+
+      return res.json({
+        shift: existingShift,
+        assignedUsers,
+        absentUsers,
+        totalDefaultUsers: defaultUsers.length,
+        actuallyAssigned: assignedUsers.length,
+        availableSlots: existingShift.slots - assignedUsers.length,
+        message: 'Using existing shift for this occurrence'
+      });
+    }
+
+    // Create shift instance
+    console.log('Creating shift with data:', {
+      name: recurringShift.name,
+      shiftCategoryId: recurringShift.shiftCategoryId,
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      location: recurringShift.location,
+      slots: customSlots || recurringShift.slots,
+      organizationId,
+      recurringShiftId
+    });
+
+    const shift = await prisma.shift.create({
+      data: {
+        name: recurringShift.name,
+        shiftCategoryId: recurringShift.shiftCategoryId,
+        startTime,
+        endTime,
+        location: recurringShift.location,
+        slots: customSlots || recurringShift.slots,
+        organizationId,
+        recurringShiftId,
+        isActive: true
+      },
+      include: { ShiftCategory: true }
+    });
+
+    console.log('Shift created successfully:', { 
+      shiftId: shift.id, 
+      shiftName: shift.name,
+      storedStartTime: shift.startTime.toISOString(),
+      storedStartTimeLocal: shift.startTime.toLocaleDateString(),
+      storedStartTimeString: shift.startTime.toDateString()
+    });
+
+    // Auto-assign default users (check for absences)
+    const defaultUsers = recurringShift.DefaultShiftUser;
+    const assignedUsers = [];
+    const absentUsers = [];
+
+    for (const defaultUser of defaultUsers) {
+      // Check if user has absence for this specific shift
+      const absence = await prisma.shiftAbsence.findFirst({
+        where: {
+          userId: defaultUser.userId,
+          shiftId: shift.id,
+          isApproved: true
+        }
+      });
+
+      if (!absence) {
+        // User is available - create signup
+        await prisma.shiftSignup.create({
+          data: {
+            userId: defaultUser.userId,
+            shiftId: shift.id,
+            checkIn: null,
+            checkOut: null,
+            mealsServed: 0
+          }
+        });
+        assignedUsers.push(defaultUser.User);
+      } else {
+        // User is absent - log it
+        absentUsers.push({
+          user: defaultUser.User,
+          absence: absence
+        });
+      }
+    }
+
+    res.json({
+      shift,
+      assignedUsers,
+      absentUsers,
+      totalDefaultUsers: defaultUsers.length,
+      actuallyAssigned: assignedUsers.length,
+      availableSlots: (customSlots || recurringShift.slots) - assignedUsers.length
+    });
+  } catch (err: any) {
+    console.error('Error creating shift from recurring:', err);
+    console.error('Error details:', {
+      message: err.message,
+      stack: err.stack,
+      recurringShiftId: req.params.recurringShiftId,
+      body: req.body
+    });
+    res.status(500).json({ 
+      error: 'Failed to create shift from recurring',
+      details: err.message 
+    });
+  }
+});
+
+// --- Shift Absence Management Endpoints ---
+
+// Get absences for a specific shift
+app.get('/api/shifts/:shiftId/absences', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const shiftId = parseInt(req.params.shiftId);
+
+    // Check if shift exists and belongs to organization
+    const shift = await prisma.shift.findFirst({
+      where: { id: shiftId, organizationId },
+      include: {
+        RecurringShift: {
+          include: {
+            DefaultShiftUser: {
+              include: { User: true }
+            }
+          }
+        }
+      }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Get absences for this shift
+    const absences = await prisma.shiftAbsence.findMany({
+      where: { shiftId, organizationId },
+      include: {
+        User: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({
+      absences,
+      defaultUsers: shift.RecurringShift?.DefaultShiftUser || []
+    });
+  } catch (err) {
+    console.error('Error fetching shift absences:', err);
+    res.status(500).json({ error: 'Failed to fetch shift absences' });
+  }
+});
+
+// Request absence for specific occurrence
+app.post('/api/shifts/:shiftId/absences', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const shiftId = parseInt(req.params.shiftId);
+    const { userId, absenceType = 'UNAVAILABLE', reason, isApproved = false } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    // Check if shift exists and belongs to organization
+    const shift = await prisma.shift.findFirst({
+      where: { id: shiftId, organizationId },
+      include: { RecurringShift: true }
+    });
+
+    if (!shift) {
+      return res.status(404).json({ error: 'Shift not found' });
+    }
+
+    // Check if user exists and belongs to organization
+    const user = await prisma.user.findFirst({
+      where: { id: userId, organizationId }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if absence already exists
+    const existingAbsence = await prisma.shiftAbsence.findFirst({
+      where: { userId, shiftId, organizationId }
+    });
+
+    if (existingAbsence) {
+      return res.status(400).json({ error: 'Absence already requested for this shift' });
+    }
+
+    // Create absence request
+    const absence = await prisma.shiftAbsence.create({
+      data: {
+        userId,
+        shiftId,
+        recurringShiftId: null, // Don't reference recurringShiftId - absences are occurrence-specific
+        organizationId,
+        absenceType,
+        reason,
+        isApproved
+      },
+      include: {
+        User: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true
+          }
+        }
+      }
+    });
+
+    res.json({ absence });
+  } catch (err) {
+    console.error('Error creating absence request:', err);
+    res.status(500).json({ error: 'Failed to create absence request' });
+  }
+});
+
+// Approve/Reject absence
+app.put('/api/shifts/:shiftId/absences/:absenceId', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const shiftId = parseInt(req.params.shiftId);
+    const absenceId = parseInt(req.params.absenceId);
+    const { isApproved, reason } = req.body;
+    const approverId = req.user.id;
+
+    // Check if absence exists and belongs to organization
+    const absence = await prisma.shiftAbsence.findFirst({
+      where: { 
+        id: absenceId,
+        shiftId,
+        organizationId
+      }
+    });
+
+    if (!absence) {
+      return res.status(404).json({ error: 'Absence not found' });
+    }
+
+    // Update absence
+    const updatedAbsence = await prisma.shiftAbsence.update({
+      where: { id: absenceId },
+      data: {
+        isApproved,
+        approvedAt: isApproved ? new Date() : null,
+        approvedBy: isApproved ? approverId : null,
+        reason: reason || absence.reason
+      },
+      include: {
+        User: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true
+          }
+        }
+      }
+    });
+
+    res.json({ absence: updatedAbsence });
+  } catch (err) {
+    console.error('Error updating absence:', err);
+    res.status(500).json({ error: 'Failed to update absence' });
+  }
+});
+
+// Cancel absence request
+app.delete('/api/shifts/:shiftId/absences/:absenceId', authenticateToken, async (req: any, res) => {
+  try {
+    const organizationId = req.user.organizationId;
+    const shiftId = parseInt(req.params.shiftId);
+    const absenceId = parseInt(req.params.absenceId);
+
+    // Check if absence exists and belongs to organization
+    const absence = await prisma.shiftAbsence.findFirst({
+      where: { 
+        id: absenceId,
+        shiftId,
+        organizationId
+      }
+    });
+
+    if (!absence) {
+      return res.status(404).json({ error: 'Absence not found' });
+    }
+
+    // Delete absence
+    await prisma.shiftAbsence.delete({
+      where: { id: absenceId }
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting absence:', err);
+    res.status(500).json({ error: 'Failed to delete absence' });
+  }
+});
+
 // --- Organization CRUD Operations ---
 
 // Get all organizations
@@ -4665,9 +5416,37 @@ app.get('/api/shift-employees', authenticateToken, async (req, res) => {
     // Get the shift
     const shift = await prisma.shift.findFirst({
       where: { id: Number(shiftId), organizationId },
-      include: { ShiftSignup: true }
+      include: { 
+        ShiftSignup: true,
+        RecurringShift: {
+          include: {
+            DefaultShiftUser: {
+              include: { User: true }
+            }
+          }
+        }
+      }
     });
     if (!shift) return res.status(404).json({ error: 'Shift not found' });
+    
+    // Get absences for this shift
+    const absences = await prisma.shiftAbsence.findMany({
+      where: { 
+        shiftId: Number(shiftId),
+        isApproved: true
+      }
+    });
+    
+    // Get default users for this shift (if it's a recurring shift)
+    let defaultUsers: any[] = [];
+    if (shift.RecurringShift?.DefaultShiftUser) {
+      defaultUsers = shift.RecurringShift.DefaultShiftUser.map(du => ({
+        id: du.userId,
+        name: `${du.User.firstName} ${du.User.lastName}`,
+        isDefault: true
+      }));
+    }
+    
     // Get all users in the org
     const users = await prisma.user.findMany({
       where: { organizationId },
@@ -4678,22 +5457,45 @@ app.get('/api/shift-employees', authenticateToken, async (req, res) => {
       where: { shiftId: Number(shiftId) },
       include: { User: true }
     });
-    // Scheduled users
+    
+    // Scheduled users (including default users who haven't signed up)
     const scheduled = signups.map(signup => ({
       id: signup.User.id,
       name: signup.User.firstName + ' ' + signup.User.lastName,
-      signupId: signup.id
+      signupId: signup.id,
+      isDefault: defaultUsers.some(du => du.id === signup.User.id)
     }));
-    // Unscheduled users
+    
+    // Get absent user IDs
+    const absentUserIds = new Set(absences.map(a => a.userId));
+    
+    // Add default users who haven't signed up yet and are not absent
     const scheduledIds = new Set(scheduled.map(u => u.id));
+    const defaultUsersNotSignedUp = defaultUsers.filter(du => 
+      !scheduledIds.has(du.id) && !absentUserIds.has(du.id)
+    );
+    
+    // Combine scheduled users with default users who haven't signed up and are not absent
+    const allScheduledUsers = [...scheduled, ...defaultUsersNotSignedUp];
+    
+    // Unscheduled users (excluding default users and absent users)
+    const defaultUserIds = new Set(defaultUsers.map(du => du.id));
     const unscheduled = users
-      .filter(u => !scheduledIds.has(u.id))
+      .filter(u => !scheduledIds.has(u.id) && !defaultUserIds.has(u.id) && !absentUserIds.has(u.id))
       .map(u => ({ id: u.id, name: u.firstName + ' ' + u.lastName }));
+    
+    // Calculate available slots: total slots - present default users - regular signups
+    const presentDefaultUsers = defaultUsers.filter(du => !absentUserIds.has(du.id)).length;
+    const regularSignups = scheduled.filter(s => !s.isDefault).length;
+    const availableSlots = Math.max(0, shift.slots - presentDefaultUsers - regularSignups);
+    
     res.json({
-      scheduled,
+      scheduled: allScheduledUsers,
       unscheduled,
       slots: shift.slots,
-      booked: scheduled.length
+      booked: allScheduledUsers.length,
+      defaultUsers: presentDefaultUsers,
+      availableSlots: availableSlots
     });
   } catch (err) {
     console.error('Error in /api/shift-employees:', err);
@@ -6242,7 +7044,7 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
       return res.status(404).json({ error: 'Shift not found' });
     }
     
-    // Find the corresponding recurring shift to get registration fields
+    // Find the corresponding recurring shift to get registration fields and default users
     const recurringShift = await prisma.recurringShift.findFirst({
       where: {
         name: shift.name,
@@ -6250,13 +7052,29 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
         organizationId: shift.organizationId
       },
       include: {
-        registrationFields: true
+        registrationFields: true,
+        DefaultShiftUser: {
+          where: { isActive: true },
+          include: { User: true }
+        }
       }
     });
     
-    // Calculate available slots
+    // Get absences for this shift
+    const absences = await prisma.shiftAbsence.findMany({
+      where: { 
+        shiftId: shift.id,
+        isApproved: true
+      }
+    });
+    
+    // Calculate available slots including default users but excluding absent ones
     const signedUpCount = shift.ShiftSignup.length;
-    const availableSlots = shift.slots - signedUpCount;
+    const absentUserIds = new Set(absences.map(a => a.userId));
+    const presentDefaultUsersCount = recurringShift?.DefaultShiftUser ? 
+      recurringShift.DefaultShiftUser.filter(du => !absentUserIds.has(du.userId)).length : 0;
+    const totalFilledSlots = signedUpCount + presentDefaultUsersCount;
+    const availableSlots = Math.max(0, shift.slots - totalFilledSlots);
     
     res.json({
       id: shift.id,
@@ -6270,6 +7088,8 @@ app.get('/api/public/shift-signup/:categoryName/:shiftName', async (req, res) =>
       organizationId: shift.organizationId,
       organizationName: shift.Organization.name,
       signedUpCount: signedUpCount,
+      defaultUsersCount: presentDefaultUsersCount,
+      totalFilledSlots: totalFilledSlots,
       registrationFields: recurringShift?.registrationFields || null
     });
   } catch (err) {

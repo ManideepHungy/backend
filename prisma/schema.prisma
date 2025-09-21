@@ -61,9 +61,10 @@ model Organization {
   id                    Int                  @id @default(autoincrement())
   name                  String               @unique
   address               String?
-  email                 String
   incoming_dollar_value Decimal?             @default(10) @db.Decimal(10, 2)
+  email                 String
   mealsvalue            Decimal?             @default(10) @db.Decimal(10, 2)
+  DefaultShiftUser      DefaultShiftUser[]
   Donation              Donation[]
   DonationCategory      DonationCategory[]
   DonationLocation      DonationLocation[]
@@ -71,6 +72,7 @@ model Organization {
   Module                Module[]
   RecurringShift        RecurringShift[]
   Shift                 Shift[]
+  ShiftAbsence          ShiftAbsence[]
   ShiftCategory         ShiftCategory[]
   TermsAndConditions    TermsAndConditions[]
   User                  User[]
@@ -87,11 +89,13 @@ model RecurringShift {
   location           String
   slots              Int
   organizationId     Int
-  isActive           Boolean                  @default(true)
   isRecurring        Boolean                  @default(true)
+  isActive           Boolean                  @default(true)
+  DefaultShiftUser   DefaultShiftUser[]
   Organization       Organization             @relation(fields: [organizationId], references: [id])
   ShiftCategory      ShiftCategory            @relation(fields: [shiftCategoryId], references: [id])
   Shift              Shift[]
+  ShiftAbsence       ShiftAbsence[]
   registrationFields ShiftRegistrationFields?
 }
 
@@ -110,6 +114,7 @@ model Shift {
   Organization     Organization    @relation(fields: [organizationId], references: [id])
   RecurringShift   RecurringShift? @relation(fields: [recurringShiftId], references: [id])
   ShiftCategory    ShiftCategory   @relation(fields: [shiftCategoryId], references: [id])
+  ShiftAbsence     ShiftAbsence[]
   ShiftSignup      ShiftSignup[]
 }
 
@@ -187,23 +192,20 @@ model User {
   resetToken               String?
   resetTokenExpiry         DateTime?
   updatedAt                DateTime               @updatedAt
-  address                  String?
-  ageBracket               String?
-  allergies                String?
   approvedAt               DateTime?
   approvedBy               Int?
-  birthdate                DateTime?
-  canCallIfShortHanded     Boolean?               @default(true)
-  city                     String?
-  communicationPreferences String?
   denialReason             String?
   deniedAt                 DateTime?
   deniedBy                 Int?
+  status                   UserStatus             @default(PENDING)
+  address                  String?
+  allergies                String?
+  birthdate                DateTime?
+  canCallIfShortHanded     Boolean?               @default(true)
+  city                     String?
   emergencyContactName     String?
   emergencyContactNumber   String?
-  frequency                String?
   homePhone                String?
-  howDidYouHear            String?
   medicalConcerns          String?
   parentGuardianEmail      String?
   parentGuardianName       String?
@@ -212,12 +214,18 @@ model User {
   preferredPrograms        String?
   preferredShifts          String?
   profilePictureUrl        String?
-  pronouns                 String?
   registrationType         RegistrationType?      @default(ADULT)
   requiredHours            Int?
   schoolWorkCommitment     Boolean?               @default(false)
   startDate                DateTime?
-  status                   UserStatus             @default(PENDING)
+  ageBracket               String?
+  communicationPreferences String?
+  frequency                String?
+  howDidYouHear            String?
+  pronouns                 String?
+  DefaultShiftUser         DefaultShiftUser[]
+  AbsenceApprovedBy        ShiftAbsence[]         @relation("AbsenceApprovedBy")
+  ShiftAbsence             ShiftAbsence[]
   shiftSignups             ShiftSignup[]
   organization             Organization           @relation(fields: [organizationId], references: [id])
   agreements               UserAgreement[]
@@ -313,6 +321,49 @@ model DonationLocation {
   Organization Organization @relation(fields: [kitchenId], references: [id])
 }
 
+model DefaultShiftUser {
+  id               Int            @id @default(autoincrement())
+  recurringShiftId Int
+  userId           Int
+  organizationId   Int
+  isActive         Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  Organization     Organization   @relation(fields: [organizationId], references: [id])
+  RecurringShift   RecurringShift @relation(fields: [recurringShiftId], references: [id], onDelete: Cascade)
+  User             User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([recurringShiftId, userId])
+  @@index([recurringShiftId])
+  @@index([userId])
+}
+
+model ShiftAbsence {
+  id               Int             @id @default(autoincrement())
+  userId           Int
+  shiftId          Int
+  recurringShiftId Int?
+  organizationId   Int
+  absenceType      AbsenceType     @default(UNAVAILABLE)
+  reason           String?
+  requestedAt      DateTime        @default(now())
+  approvedAt       DateTime?
+  approvedBy       Int?
+  isApproved       Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  ApprovedBy       User?           @relation("AbsenceApprovedBy", fields: [approvedBy], references: [id])
+  Organization     Organization    @relation(fields: [organizationId], references: [id])
+  RecurringShift   RecurringShift? @relation(fields: [recurringShiftId], references: [id], onDelete: Cascade)
+  Shift            Shift           @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  User             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, shiftId])
+  @@index([recurringShiftId])
+  @@index([userId])
+  @@index([shiftId])
+}
+
 enum UserRole {
   VOLUNTEER
   STAFF
@@ -371,4 +422,12 @@ enum HowDidYouHear {
   WORK
   NOTICE_BOARDS
   EVENTS
+}
+
+enum AbsenceType {
+  UNAVAILABLE
+  SICK_LEAVE
+  PERSONAL
+  VACATION
+  EMERGENCY
 }

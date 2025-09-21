@@ -8,18 +8,20 @@ datasource db {
 }
 
 model Donation {
-  id             Int            @id @default(autoincrement())
-  shiftId        Int?
-  organizationId Int
-  donorId        Int
-  shiftSignupId  Int?
-  createdAt      DateTime       @default(now())
-  summary        Float
-  Donor          Donor          @relation(fields: [donorId], references: [id])
-  Organization   Organization   @relation(fields: [organizationId], references: [id])
-  Shift          Shift?         @relation(fields: [shiftId], references: [id])
-  ShiftSignup    ShiftSignup?   @relation(fields: [shiftSignupId], references: [id])
-  DonationItem   DonationItem[]
+  id                 Int              @id @default(autoincrement())
+  shiftId            Int?
+  organizationId     Int
+  donorId            Int?
+  shiftSignupId      Int?
+  createdAt          DateTime         @default(now())
+  summary            Float
+  donationLocationId Int
+  DonationLocation   DonationLocation @relation(fields: [donationLocationId], references: [id])
+  Donor              Donor?           @relation(fields: [donorId], references: [id])
+  Organization       Organization     @relation(fields: [organizationId], references: [id])
+  Shift              Shift?           @relation(fields: [shiftId], references: [id])
+  ShiftSignup        ShiftSignup?     @relation(fields: [shiftSignupId], references: [id])
+  DonationItem       DonationItem[]
 }
 
 model DonationCategory {
@@ -43,25 +45,30 @@ model DonationItem {
 }
 
 model Donor {
-  id           Int          @id @default(autoincrement())
-  name         String       @unique
-  location     String?
-  contactInfo  String?
-  kitchenId    Int
-  Donation     Donation[]
-  Organization Organization @relation(fields: [kitchenId], references: [id])
+  id               Int          @id @default(autoincrement())
+  kitchenId        Int
+  donorType        String
+  email            String?
+  firstName        String?
+  lastName         String?
+  organizationName String?
+  phoneNumber      String?
+  Donation         Donation[]
+  Organization     Organization @relation(fields: [kitchenId], references: [id])
 }
 
 model Organization {
   id                    Int                  @id @default(autoincrement())
   name                  String               @unique
   address               String?
-  incoming_dollar_value Decimal?             @default(10) @db.Decimal(10, 2)
   email                 String
+  incoming_dollar_value Decimal?             @default(10) @db.Decimal(10, 2)
   mealsvalue            Decimal?             @default(10) @db.Decimal(10, 2)
   Donation              Donation[]
   DonationCategory      DonationCategory[]
+  DonationLocation      DonationLocation[]
   Donor                 Donor[]
+  Module                Module[]
   RecurringShift        RecurringShift[]
   Shift                 Shift[]
   ShiftCategory         ShiftCategory[]
@@ -80,8 +87,8 @@ model RecurringShift {
   location           String
   slots              Int
   organizationId     Int
-  isRecurring        Boolean                  @default(true)
   isActive           Boolean                  @default(true)
+  isRecurring        Boolean                  @default(true)
   Organization       Organization             @relation(fields: [organizationId], references: [id])
   ShiftCategory      ShiftCategory            @relation(fields: [shiftCategoryId], references: [id])
   Shift              Shift[]
@@ -180,20 +187,23 @@ model User {
   resetToken               String?
   resetTokenExpiry         DateTime?
   updatedAt                DateTime               @updatedAt
+  address                  String?
+  ageBracket               String?
+  allergies                String?
   approvedAt               DateTime?
   approvedBy               Int?
-  denialReason             String?
-  deniedAt                 DateTime?
-  deniedBy                 Int?
-  status                   UserStatus             @default(PENDING)
-  address                  String?
-  allergies                String?
   birthdate                DateTime?
   canCallIfShortHanded     Boolean?               @default(true)
   city                     String?
+  communicationPreferences String?
+  denialReason             String?
+  deniedAt                 DateTime?
+  deniedBy                 Int?
   emergencyContactName     String?
   emergencyContactNumber   String?
+  frequency                String?
   homePhone                String?
+  howDidYouHear            String?
   medicalConcerns          String?
   parentGuardianEmail      String?
   parentGuardianName       String?
@@ -202,15 +212,12 @@ model User {
   preferredPrograms        String?
   preferredShifts          String?
   profilePictureUrl        String?
+  pronouns                 String?
   registrationType         RegistrationType?      @default(ADULT)
   requiredHours            Int?
   schoolWorkCommitment     Boolean?               @default(false)
   startDate                DateTime?
-  ageBracket               String?
-  communicationPreferences String?
-  frequency                String?
-  howDidYouHear            String?
-  pronouns                 String?
+  status                   UserStatus             @default(PENDING)
   shiftSignups             ShiftSignup[]
   organization             Organization           @relation(fields: [organizationId], references: [id])
   agreements               UserAgreement[]
@@ -230,10 +237,14 @@ model WeighingCategory {
 
 model Module {
   id                    Int                     @id @default(autoincrement())
-  name                  String                  @unique
+  name                  String
   description           String?
+  organizationId        Int
+  Organization          Organization            @relation(fields: [organizationId], references: [id])
   RoleDefaultPermission RoleDefaultPermission[]
   UserModulePermission  UserModulePermission[]
+
+  @@unique([name, organizationId])
 }
 
 model TermsAndConditions {
@@ -290,6 +301,16 @@ model RoleDefaultPermission {
   Module    Module   @relation(fields: [moduleId], references: [id])
 
   @@unique([role, moduleId])
+}
+
+model DonationLocation {
+  id           Int          @id @default(autoincrement())
+  name         String       @unique
+  location     String?
+  contactInfo  String?
+  kitchenId    Int
+  Donation     Donation[]
+  Organization Organization @relation(fields: [kitchenId], references: [id])
 }
 
 enum UserRole {

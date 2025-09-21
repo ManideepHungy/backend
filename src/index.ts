@@ -11,6 +11,7 @@ import multer from 'multer'
 import path from 'path'
 import fs from 'fs'
 
+
 // Extend Express Request interface to include user property
 declare global {
   namespace Express {
@@ -250,8 +251,8 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
     });
     const incomingDollarValue = Number(org?.incoming_dollar_value) || 0;
 
-    // Get all donors for this organization
-    const donors = await prisma.donor.findMany({
+    // Get all donation locations for this organization
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
@@ -276,7 +277,7 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
         }
       },
       include: {
-        Donor: true
+        DonationLocation: true
       }
     });
 
@@ -291,7 +292,7 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
         month: '2-digit',
         day: '2-digit'
       }).split('/').reverse().join('-');
-      const donorName = donation.Donor.name;
+      const donorName = donation.DonationLocation.name;
       const totalWeight = donation.summary;
 
       if (!acc[date]) {
@@ -313,11 +314,11 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
 
     // Calculate totals for each donor
     const donorTotals: { [donor: string]: { weight: number, value: number } } = {};
-    for (const donor of donors) {
-      donorTotals[donor.name] = { weight: 0, value: 0 };
+    for (const donationLocation of donationLocations) {
+      donorTotals[donationLocation.name] = { weight: 0, value: 0 };
     }
     for (const donation of donations) {
-      const donorName = donation.Donor.name;
+      const donorName = donation.DonationLocation.name;
       const totalWeight = donation.summary;
       if (donorTotals[donorName]) {
         donorTotals[donorName].weight += totalWeight;
@@ -326,14 +327,14 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
     }
 
     // Calculate totals
-    const totals = donors.reduce((acc: any, donor: any) => {
-      acc[donor.name] = tableData.reduce((sum: number, row: any) => sum + (row[donor.name] || 0), 0);
+    const totals = donationLocations.reduce((acc: any, donationLocation: any) => {
+      acc[donationLocation.name] = tableData.reduce((sum: number, row: any) => sum + (row[donationLocation.name] || 0), 0);
       return acc;
     }, {});
 
     // Calculate row totals
     const rowTotals = tableData.map((row: any) => 
-      donors.reduce((sum: number, donor: any) => sum + (row[donor.name] || 0), 0)
+      donationLocations.reduce((sum: number, donationLocation: any) => sum + (row[donationLocation.name] || 0), 0)
     );
 
     // Calculate grand totals
@@ -342,7 +343,7 @@ app.get('/api/incoming-stats', authenticateToken, async (req: any, res) => {
     const grandTotal = Object.values(totals).reduce((sum: number, val: any) => sum + val, 0);
 
     res.json({
-      donors: donors.map((d: any) => d.name),
+      donors: donationLocations.map((d: any) => d.name),
       tableData: tableData.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()),
       totals,
       rowTotals,
@@ -365,8 +366,8 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
     const { month, year, unit } = req.query;
     const organizationId = req.user.organizationId;
 
-    // Get all donors for this organization
-    const donors = await prisma.donor.findMany({
+    // Get all donation locations for this organization
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
@@ -402,7 +403,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
         }
       },
       include: {
-        Donor: true
+        DonationLocation: true
       }
     });
 
@@ -417,7 +418,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
         month: '2-digit',
         day: '2-digit'
       }).split('/').reverse().join('-');
-      const donorName = donation.Donor.name;
+      const donorName = donation.DonationLocation.name;
       const totalWeight = donation.summary;
 
       if (!acc[date]) {
@@ -438,14 +439,14 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
     }));
 
     // Calculate totals
-    const totals = donors.reduce((acc: any, donor: any) => {
-      acc[donor.name] = tableData.reduce((sum: number, row: any) => sum + (row[donor.name] || 0), 0);
+    const totals = donationLocations.reduce((acc: any, donationLocation: any) => {
+      acc[donationLocation.name] = tableData.reduce((sum: number, row: any) => sum + (row[donationLocation.name] || 0), 0);
       return acc;
     }, {});
 
     // Calculate row totals
     const rowTotals = tableData.map((row: any) => 
-      donors.reduce((sum: number, donor: any) => sum + (row[donor.name] || 0), 0)
+      donationLocations.reduce((sum: number, donationLocation: any) => sum + (row[donationLocation.name] || 0), 0)
     );
 
     // Calculate grand total
@@ -501,8 +502,8 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       const monthMap: { [month: number]: any } = {};
       for (let m = 1; m <= 12; m++) {
         monthMap[m] = { Month: monthNames[m - 1] };
-        donors.forEach(donor => {
-          monthMap[m][donor.name] = 0;
+        donationLocations.forEach(donationLocation => {
+          monthMap[m][donationLocation.name] = 0;
         });
         monthMap[m]['Total'] = 0;
       }
@@ -513,10 +514,10 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
         if (isNaN(d.getTime())) return;
         const m = d.getMonth() + 1;
         let rowTotal = 0;
-        donors.forEach(donor => {
-          if (typeof row[donor.name] === 'number') {
-            const value = Number(row[donor.name]);
-            monthMap[m][donor.name] += value;
+        donationLocations.forEach(donationLocation => {
+          if (typeof row[donationLocation.name] === 'number') {
+            const value = Number(row[donationLocation.name]);
+            monthMap[m][donationLocation.name] += value;
             rowTotal += value;
           }
         });
@@ -525,7 +526,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
 
       // Build display data for all months
       const displayData = Object.values(monthMap);
-      const columns = ['Month', ...donors.map(d => d.name), 'Total'];
+      const columns = ['Month', ...donationLocations.map(d => d.name), 'Total'];
 
       // Header row with unit labels
       const headerRow = columns.map(col => {
@@ -538,7 +539,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       displayData.forEach((row: any) => {
       const rowArr = [
           row.Month,
-          ...donors.map(d => convertWeight(row[d.name] || 0)),
+          ...donationLocations.map(d => convertWeight(row[d.name] || 0)),
           convertWeight(row.Total || 0)
       ];
       worksheet.addRow(rowArr);
@@ -547,14 +548,14 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       // Yearly totals row
       const yearlyTotalsRow = [
         'Yearly Total',
-        ...donors.map(d => convertWeight(totals[d.name] || 0)),
+        ...donationLocations.map(d => convertWeight(totals[d.name] || 0)),
         convertWeight(grandTotal)
       ];
       worksheet.addRow(yearlyTotalsRow);
 
     } else {
       // Daily view for specific month
-      const columns = ['Date', ...donors.map(d => d.name), 'Total'];
+      const columns = ['Date', ...donationLocations.map(d => d.name), 'Total'];
 
       // Header row with unit labels
       const headerRow = columns.map(col => {
@@ -567,7 +568,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       tableData.forEach((row: any, i: number) => {
         const rowArr = [
           formatDateForExcel(row.date),
-          ...donors.map(d => convertWeight(row[d.name] || 0)),
+          ...donationLocations.map(d => convertWeight(row[d.name] || 0)),
           convertWeight(rowTotals[i])
         ];
         worksheet.addRow(rowArr);
@@ -576,7 +577,7 @@ app.get('/api/incoming-stats/export', authenticateToken, async (req: any, res) =
       // Monthly totals row
       const monthlyTotalsRow = [
         'Monthly Total',
-        ...donors.map(d => convertWeight(totals[d.name] || 0)),
+        ...donationLocations.map(d => convertWeight(totals[d.name] || 0)),
         convertWeight(grandTotal)
       ];
       worksheet.addRow(monthlyTotalsRow);
@@ -3149,7 +3150,9 @@ app.put('/api/users/:id/approve', authenticateToken, async (req: any, res) => {
     });
 
     // Create role-based permissions for approved user
-    const modules = await prisma.module.findMany();
+    const modules = await prisma.module.findMany({
+      where: { organizationId: updatedUser.organizationId }
+    });
     
     // Debug: Log all available modules
     console.log(`🔍 Available modules for ${updatedUser.role} user:`);
@@ -3269,7 +3272,9 @@ app.put('/api/users/:id/reset', authenticateToken, async (req: any, res) => {
 // Get all modules
 app.get('/api/modules', authenticateToken, async (req: any, res) => {
   try {
+    const organizationId = req.user.organizationId;
     const modules = await prisma.module.findMany({
+      where: { organizationId },
       orderBy: { name: 'asc' }
     });
     res.json(modules);
@@ -3405,6 +3410,7 @@ app.get('/api/users/:id/permissions', authenticateToken, async (req: any, res) =
 
     // Get all modules and user permissions
     const modules = await prisma.module.findMany({
+      where: { organizationId: user.organizationId },
       orderBy: { name: 'asc' }
     });
 
@@ -3645,7 +3651,9 @@ app.put('/api/roles/:role/default-permissions', authenticateToken, async (req: a
 // Get all modules for role permission configuration
 app.get('/api/modules/for-role-permissions', authenticateToken, async (req: any, res) => {
   try {
+    const organizationId = req.user.organizationId;
     const modules = await prisma.module.findMany({
+      where: { organizationId },
       orderBy: { name: 'asc' }
     });
     res.json(modules);
@@ -4520,7 +4528,7 @@ app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
     await prisma.$transaction([
       prisma.donation.deleteMany({ where: { organizationId } }),
       prisma.donationCategory.deleteMany({ where: { organizationId } }),
-      prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+      prisma.donationLocation.deleteMany({ where: { kitchenId: organizationId } }),
       prisma.recurringShift.deleteMany({ where: { organizationId } }),
       prisma.shift.deleteMany({ where: { organizationId } }),
       prisma.shiftCategory.deleteMany({ where: { organizationId } }),
@@ -4712,8 +4720,8 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
       startDate = new Date(yearNum, monthNum - 1, 1);
       endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
     }
-    // Fetch donors
-    const donors = await prisma.donor.findMany({
+    // Fetch donation locations
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
@@ -4744,19 +4752,19 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
           }
         }
       },
-      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+      select: { categoryId: true, weightKg: true, Donation: { select: { donationLocationId: true } } }
     });
     // Build donor x category table
     const donorIdToName: Record<number, string> = {};
-    donors.forEach(d => { donorIdToName[d.id] = d.name; });
+    donationLocations.forEach(d => { donorIdToName[d.id] = d.name; });
     const catIdToName: Record<number, string> = {};
     categories.forEach(c => { catIdToName[c.id] = c.name; });
-    // Initialize table: donorName -> categoryName -> 0
+    // Initialize table: donationLocationName -> categoryName -> 0
     const table: Record<string, Record<string, number>> = {};
-    donors.forEach(donor => {
-      table[donor.name] = {};
+    donationLocations.forEach(donationLocation => {
+      table[donationLocation.name] = {};
       categories.forEach(cat => {
-        table[donor.name][cat.name] = 0;
+        table[donationLocation.name][cat.name] = 0;
       });
     });
     // Get weighing categories for custom unit conversion
@@ -4772,7 +4780,7 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
 
     // Fill table with actual weights (store raw kg values)
     items.forEach(item => {
-      const donorName = donorIdToName[Number(item.Donation.donorId)];
+      const donorName = donorIdToName[Number(item.Donation.donationLocationId)];
       const catName = catIdToName[Number(item.categoryId)];
       if (donorName && catName) {
         table[donorName][catName] += item.weightKg;
@@ -4803,15 +4811,15 @@ app.get('/api/inventory/donor-category-table', authenticateToken, async (req: an
 
     // Convert table values to display units
     const convertedTable: Record<string, Record<string, number>> = {};
-    donors.forEach(donor => {
-      convertedTable[donor.name] = {};
+    donationLocations.forEach(donationLocation => {
+      convertedTable[donationLocation.name] = {};
       categories.forEach(cat => {
-        convertedTable[donor.name][cat.name] = convertWeight(table[donor.name][cat.name] || 0);
+        convertedTable[donationLocation.name][cat.name] = convertWeight(table[donationLocation.name][cat.name] || 0);
       });
     });
 
     res.json({
-      donors: donors.map(d => d.name),
+      donors: donationLocations.map(d => d.name),
       categories: categories.map(c => c.name),
       table: convertedTable
     });
@@ -5458,7 +5466,7 @@ app.delete('/api/organizations/:id', authenticateToken, async (req, res) => {
     await prisma.$transaction([
       prisma.donation.deleteMany({ where: { organizationId } }),
       prisma.donationCategory.deleteMany({ where: { organizationId } }),
-      prisma.donor.deleteMany({ where: { kitchenId: organizationId } }),
+      prisma.donationLocation.deleteMany({ where: { kitchenId: organizationId } }),
       prisma.recurringShift.deleteMany({ where: { organizationId } }),
       prisma.shift.deleteMany({ where: { organizationId } }),
       prisma.shiftCategory.deleteMany({ where: { organizationId } }),
@@ -5598,8 +5606,8 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
       }
     });
 
-    // Fetch donors
-    const donors = await prisma.donor.findMany({
+    // Fetch donation locations
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
@@ -5630,24 +5638,24 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
           }
         }
       },
-      select: { categoryId: true, weightKg: true, Donation: { select: { donorId: true } } }
+      select: { categoryId: true, weightKg: true, Donation: { select: { donationLocationId: true } } }
     });
-    // Build donor x category table
+    // Build donation location x category table
     const donorIdToName: Record<number, string> = {};
-    donors.forEach(d => { donorIdToName[d.id] = d.name; });
+    donationLocations.forEach(d => { donorIdToName[d.id] = d.name; });
     const catIdToName: Record<string, string> = {};
     categories.forEach(c => { catIdToName[c.id] = c.name; });
-    // Initialize table: donorName -> categoryName -> 0
+    // Initialize table: donationLocationName -> categoryName -> 0
     const table: Record<string, Record<string, number>> = {};
-    donors.forEach(donor => {
-      table[donor.name] = {};
+    donationLocations.forEach(donationLocation => {
+      table[donationLocation.name] = {};
       categories.forEach(cat => {
-        table[donor.name][cat.name] = 0;
+        table[donationLocation.name][cat.name] = 0;
       });
     });
     // Fill table with actual weights
     items.forEach(item => {
-      const donorName = donorIdToName[Number(item.Donation.donorId)];
+      const donorName = donorIdToName[Number(item.Donation.donationLocationId)];
       const catName = catIdToName[String(item.categoryId)];
       if (donorName && catName) {
         table[donorName][catName] += item.weightKg;
@@ -5687,14 +5695,14 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Inventory');
     // Header row with unit labels
-    const headerRow = ['Donor', ...categories.map(c => `${c.name} (${getUnitLabel()})`), `Total (${getUnitLabel()})`];
+    const headerRow = ['Donation Location', ...categories.map(c => `${c.name} (${getUnitLabel()})`), `Total (${getUnitLabel()})`];
     worksheet.addRow(headerRow);
     // Data rows
-    donors.forEach(donor => {
-      const row: (string | number)[] = [donor.name];
+    donationLocations.forEach(donationLocation => {
+      const row: (string | number)[] = [donationLocation.name];
       let donorTotal = 0;
       categories.forEach(cat => {
-        const val = convertWeight(table[donor.name][cat.name] || 0);
+        const val = convertWeight(table[donationLocation.name][cat.name] || 0);
         row.push(val);
         donorTotal += val;
       });
@@ -5705,7 +5713,7 @@ app.get('/api/inventory/export-table', authenticateToken, async (req: any, res) 
     const totalRow: (string | number)[] = ['Total'];
     let grandTotal: number = 0;
     categories.forEach(cat => {
-      const catTotal = donors.reduce((sum: number, donor) => sum + convertWeight(table[donor.name][cat.name] || 0), 0);
+      const catTotal = donationLocations.reduce((sum: number, donationLocation) => sum + convertWeight(table[donationLocation.name][cat.name] || 0), 0);
       totalRow.push(+catTotal.toFixed(2));
       grandTotal += catTotal;
     });
@@ -5735,8 +5743,8 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
     });
     const incomingDollarValue = Number(org?.incoming_dollar_value) || 0;
 
-    // Get all donors for this organization
-    const donors = await prisma.donor.findMany({
+    // Get all donation locations for this organization
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       select: { id: true, name: true }
     });
@@ -5759,7 +5767,7 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
           lte: endDate
         }
       },
-      include: { Donor: true }
+      include: { DonationLocation: true }
     });
 
     // Get weighing categories for custom units
@@ -5786,11 +5794,11 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
       return +weightKg.toFixed(2);
     }
 
-    // Build donor totals
+    // Build donation location totals
     const donorTotals: { [donor: string]: { weight: number, value: number } } = {};
-    donors.forEach(donor => { donorTotals[donor.name] = { weight: 0, value: 0 }; });
+    donationLocations.forEach(donationLocation => { donorTotals[donationLocation.name] = { weight: 0, value: 0 }; });
     donations.forEach(donation => {
-      const donorName = donation.Donor.name;
+      const donorName = donation.DonationLocation.name;
       const weightKg = donation.summary;
       if (donorTotals[donorName]) {
         donorTotals[donorName].weight += weightKg;
@@ -5802,13 +5810,13 @@ app.get('/api/incoming-stats/export-dashboard', authenticateToken, async (req: a
     const workbook = new (require('exceljs')).Workbook();
     const worksheet = workbook.addWorksheet('Incoming Summary');
     const unitLabel = unit === 'Pounds (lb)' ? 'lbs' : (unit === 'Kilograms (kg)' ? 'kg' : unit);
-    worksheet.addRow(['Donor', `Weight (${unitLabel})`, 'Value ($)']);
+    worksheet.addRow(['Donation Location', `Weight (${unitLabel})`, 'Value ($)']);
     let grandTotalWeight = 0;
     let grandTotalValue = 0;
-    donors.forEach(donor => {
-      const w = convertWeight(donorTotals[donor.name].weight);
-      const v = +(donorTotals[donor.name].value).toFixed(2);
-      worksheet.addRow([donor.name, w, v]);
+    donationLocations.forEach(donationLocation => {
+      const w = convertWeight(donorTotals[donationLocation.name].weight);
+      const v = +(donorTotals[donationLocation.name].value).toFixed(2);
+      worksheet.addRow([donationLocation.name, w, v]);
       grandTotalWeight += w;
       grandTotalValue += v;
     });
@@ -6711,11 +6719,11 @@ app.get('/api/donors', authenticateToken, async (req, res) => {
     if (!user) {
       return res.status(401).json({ error: 'User not authenticated' });
     }
-    const donors = await prisma.donor.findMany({
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: user.organizationId },
       orderBy: { name: 'asc' }
     });
-    res.json(donors);
+    res.json(donationLocations);
   } catch (err) {
     console.error('Error fetching donors:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -6734,19 +6742,19 @@ app.post('/api/donors', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Donor name is required' });
     }
 
-    // Check if donor already exists
-    const existingDonor = await prisma.donor.findFirst({
+    // Check if donation location already exists
+    const existingDonationLocation = await prisma.donationLocation.findFirst({
       where: {
         name: name.trim(),
         kitchenId: user.organizationId
       }
     });
 
-    if (existingDonor) {
-      return res.status(400).json({ error: 'Donor with this name already exists' });
+    if (existingDonationLocation) {
+      return res.status(400).json({ error: 'Donation location with this name already exists' });
     }
 
-    const donor = await prisma.donor.create({
+    const donationLocation = await prisma.donationLocation.create({
       data: {
         name: name.trim(),
         location: location || null,
@@ -6755,7 +6763,7 @@ app.post('/api/donors', authenticateToken, async (req, res) => {
       }
     });
 
-    res.status(201).json(donor);
+    res.status(201).json(donationLocation);
   } catch (err) {
     console.error('Error creating donor:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -6775,20 +6783,20 @@ app.put('/api/donors/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Donor name is required' });
     }
 
-    // Check if donor exists and belongs to user's organization
-    const existingDonor = await prisma.donor.findFirst({
+    // Check if donation location exists and belongs to user's organization
+    const existingDonationLocation = await prisma.donationLocation.findFirst({
       where: {
         id: donorId,
         kitchenId: user.organizationId
       }
     });
 
-    if (!existingDonor) {
-      return res.status(404).json({ error: 'Donor not found' });
+    if (!existingDonationLocation) {
+      return res.status(404).json({ error: 'Donation location not found' });
     }
 
-    // Check if new name conflicts with existing donor
-    const nameConflict = await prisma.donor.findFirst({
+    // Check if new name conflicts with existing donation location
+    const nameConflict = await prisma.donationLocation.findFirst({
       where: {
         name: name.trim(),
         kitchenId: user.organizationId,
@@ -6797,10 +6805,10 @@ app.put('/api/donors/:id', authenticateToken, async (req, res) => {
     });
 
     if (nameConflict) {
-      return res.status(400).json({ error: 'Donor with this name already exists' });
+      return res.status(400).json({ error: 'Donation location with this name already exists' });
     }
 
-    const updatedDonor = await prisma.donor.update({
+    const updatedDonationLocation = await prisma.donationLocation.update({
       where: { id: donorId },
       data: {
         name: name.trim(),
@@ -6809,7 +6817,7 @@ app.put('/api/donors/:id', authenticateToken, async (req, res) => {
       }
     });
 
-    res.json(updatedDonor);
+    res.json(updatedDonationLocation);
   } catch (err) {
     console.error('Error updating donor:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -6824,30 +6832,30 @@ app.delete('/api/donors/:id', authenticateToken, async (req, res) => {
     }
     const donorId = parseInt(req.params.id);
 
-    // Check if donor exists and belongs to user's organization
-    const existingDonor = await prisma.donor.findFirst({
+    // Check if donation location exists and belongs to user's organization
+    const existingDonationLocation = await prisma.donationLocation.findFirst({
       where: {
         id: donorId,
         kitchenId: user.organizationId
       }
     });
 
-    if (!existingDonor) {
-      return res.status(404).json({ error: 'Donor not found' });
+    if (!existingDonationLocation) {
+      return res.status(404).json({ error: 'Donation location not found' });
     }
 
-    // Check if donor is being used in donations
+    // Check if donation location is being used in donations
     const donations = await prisma.donation.findFirst({
-      where: { donorId }
+      where: { donationLocationId: donorId }
     });
 
     if (donations) {
       return res.status(400).json({ 
-        error: 'Cannot delete donor. They have existing donations.' 
+        error: 'Cannot delete donation location. It has existing donations.' 
       });
     }
 
-    await prisma.donor.delete({
+    await prisma.donationLocation.delete({
       where: { id: donorId }
     });
 
@@ -7512,8 +7520,8 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Date parameter is required' });
     }
 
-    // Get all donors for this organization
-    const donors = await prisma.donor.findMany({
+    // Get all donation locations for this organization
+    const donationLocations = await prisma.donationLocation.findMany({
       where: { kitchenId: organizationId },
       orderBy: { name: 'asc' }
     });
@@ -7545,7 +7553,7 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
         }
       },
       include: {
-        Donor: true,
+        DonationLocation: true,
         DonationItem: {
           include: {
             DonationCategory: true
@@ -7554,17 +7562,17 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
       }
     });
 
-    // Build the table data: rows are donors, columns are categories
-    const tableData = donors.map(donor => {
-      const row: any = { donorId: donor.id, donorName: donor.name };
+    // Build the table data: rows are donation locations, columns are categories
+    const tableData = donationLocations.map(donationLocation => {
+      const row: any = { donorId: donationLocation.id, donorName: donationLocation.name };
       
       // Initialize all categories with 0
       categories.forEach(category => {
         row[category.name] = 0;
       });
 
-      // Find donations for this donor on this date
-      const donorDonations = donations.filter(d => d.donorId === donor.id);
+      // Find donations for this donation location on this date
+      const donorDonations = donations.filter(d => d.donationLocationId === donationLocation.id);
       
       // Sum up weights for each category
       donorDonations.forEach(donation => {
@@ -7580,7 +7588,7 @@ app.get('/detail-donations', authenticateToken, async (req, res) => {
     });
 
     res.json({
-      donors: donors.map(d => ({ id: d.id, name: d.name })),
+      donors: donationLocations.map(d => ({ id: d.id, name: d.name })),
       categories: categories.map(c => ({ id: c.id, name: c.name })),
       tableData
     });
@@ -7603,13 +7611,13 @@ app.post('/detail-donations', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Date, donorId, categoryId, and weightKg are required' });
     }
 
-    // Validate donor belongs to organization
-    const donor = await prisma.donor.findFirst({
+    // Validate donation location belongs to organization
+    const donationLocation = await prisma.donationLocation.findFirst({
       where: { id: donorId, kitchenId: organizationId }
     });
 
-    if (!donor) {
-      return res.status(404).json({ error: 'Donor not found' });
+    if (!donationLocation) {
+      return res.status(404).json({ error: 'Donation location not found' });
     }
 
     // Validate category belongs to organization
@@ -7676,7 +7684,7 @@ app.post('/detail-donations', authenticateToken, async (req, res) => {
       donation = await prisma.donation.create({
         data: {
           organizationId,
-          donorId,
+          donationLocationId: donorId,
           summary: weightKg,
           createdAt: utcStartDate
         }
@@ -7713,13 +7721,13 @@ app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req,
       return res.status(400).json({ error: 'Date and weightKg are required' });
     }
 
-    // Validate donor belongs to organization
-    const donor = await prisma.donor.findFirst({
+    // Validate donation location belongs to organization
+    const donationLocation = await prisma.donationLocation.findFirst({
       where: { id: parseInt(donorId), kitchenId: organizationId }
     });
 
-    if (!donor) {
-      return res.status(404).json({ error: 'Donor not found' });
+    if (!donationLocation) {
+      return res.status(404).json({ error: 'Donation location not found' });
     }
 
     // Validate category belongs to organization
@@ -7756,7 +7764,7 @@ app.put('/detail-donations/:donorId/:categoryId', authenticateToken, async (req,
       donation = await prisma.donation.create({
         data: {
           organizationId,
-          donorId: parseInt(donorId),
+          donationLocationId: parseInt(donorId),
           summary: weightKg,
           createdAt: utcStartDate
         }
@@ -7813,13 +7821,13 @@ app.delete('/detail-donations/:donorId/:categoryId', authenticateToken, async (r
       return res.status(400).json({ error: 'Date parameter is required' });
     }
 
-    // Validate donor belongs to organization
-    const donor = await prisma.donor.findFirst({
+    // Validate donation location belongs to organization
+    const donationLocation = await prisma.donationLocation.findFirst({
       where: { id: parseInt(donorId), kitchenId: organizationId }
     });
 
-    if (!donor) {
-      return res.status(404).json({ error: 'Donor not found' });
+    if (!donationLocation) {
+      return res.status(404).json({ error: 'Donation location not found' });
     }
 
     // Validate category belongs to organization
@@ -7942,6 +7950,25 @@ app.post('/api/contact', async (req, res) => {
 });
 
 // Start server
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running on port ${port}`)
+})
+
+// Graceful shutdown handling
+process.on('SIGINT', async () => {
+  console.log('Received SIGINT, shutting down gracefully...')
+  await prisma.$disconnect()
+  server.close(() => {
+    console.log('Server closed')
+    process.exit(0)
+  })
+})
+
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM, shutting down gracefully...')
+  await prisma.$disconnect()
+  server.close(() => {
+    console.log('Server closed')
+    process.exit(0)
+  })
 })
